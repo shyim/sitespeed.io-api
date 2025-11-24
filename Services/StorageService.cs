@@ -31,7 +31,8 @@ public class StorageService
         {
             BucketName = _bucketName,
             Key = key,
-            FilePath = filePath
+            FilePath = filePath,
+            DisablePayloadSigning = true
         };
 
         await _s3Client.PutObjectAsync(putRequest);
@@ -43,7 +44,8 @@ public class StorageService
         {
             BucketName = _bucketName,
             Key = key,
-            InputStream = stream
+            InputStream = stream,
+            DisablePayloadSigning = true
         };
 
         await _s3Client.PutObjectAsync(putRequest);
