@@ -8,6 +8,7 @@ public class StorageService
 {
     private readonly IAmazonS3 _s3Client;
     private readonly string _bucketName;
+    private readonly bool _disablePayloadSigning;
 
     public StorageService(IConfiguration configuration)
     {
@@ -15,6 +16,7 @@ public class StorageService
         var accessKey = configuration["S3_ACCESS_KEY"];
         var secretKey = configuration["S3_SECRET_KEY"];
         _bucketName = configuration["S3_BUCKET_NAME"] ?? "sitespeed-results";
+        _disablePayloadSigning = configuration["S3_DISABLE_PAYLOAD_SIGNING"] != "false";
 
         var config = new AmazonS3Config
         {
@@ -32,7 +34,7 @@ public class StorageService
             BucketName = _bucketName,
             Key = key,
             FilePath = filePath,
-            DisablePayloadSigning = true
+            DisablePayloadSigning = _disablePayloadSigning
         };
 
         await _s3Client.PutObjectAsync(putRequest);
@@ -45,7 +47,7 @@ public class StorageService
             BucketName = _bucketName,
             Key = key,
             InputStream = stream,
-            DisablePayloadSigning = true
+            DisablePayloadSigning = _disablePayloadSigning
         };
 
         await _s3Client.PutObjectAsync(putRequest);
