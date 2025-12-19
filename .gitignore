@@ -1,34 +1,30 @@
-# From .NET Core 3.0 you can use the command: `dotnet new gitignore` to generate a customizable .gitignore file
+# Binaries
+# The binary name from our Dockerfile/build
+sitespeed-service
+# Standard main binary output
+main
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+test
+test.exe
 
-*.swp
-*.*~
-project.lock.json
-.DS_Store
-*.pyc
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
 
-# Visual Studio Code
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+
+# VS Code
 .vscode
 
-# User-specific files
-*.suo
-*.user
-*.userosscache
-*.sln.docstates
+# Mac
+.DS_Store
 
-# Build results
-[Dd]ebug/
-[Dd]ebugPublic/
-[Rr]elease/
-[Rr]eleases/
-x64/
-x86/
-build/
-bld/
-[Bb]in/
-[Oo]bj/
-msbuild.log
-msbuild.err
-msbuild.wrn
-
-# Visual Studio 2015
-.vs/
+# Temporary directory used for sitespeed results in local dev if mapped or created
+sitespeed-cache/

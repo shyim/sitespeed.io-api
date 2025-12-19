@@ -1,29 +1,20 @@
-# Build stage
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
-WORKDIR /src
+FROM golang:1.25-alpine AS build
+WORKDIR /app
 
-# Install AOT dependencies
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       clang \
-       zlib1g-dev
-
-COPY sitespeed-service.csproj .
-RUN dotnet restore
+COPY go.mod go.sum ./
+RUN go mod download
 
 COPY . .
-RUN --mount=type=cache,id=dotnet_tools,target=/root/.dotnet dotnet publish -c Release -r linux-arm64 /p:PublishAot=true -o /app/publish
+RUN CGO_ENABLED=0 go build -o sitespeed-service ./cmd/api
 
-# Runtime stage
 FROM sitespeedio/sitespeed.io:latest
 WORKDIR /app
 
-COPY --from=build /app/publish/sitespeed-service .
-COPY --from=build /app/publish/appsettings*.json .
+COPY --from=build /app/sitespeed-service .
 
-ENV ASPNETCORE_URLS=http://+:3001 \
+ENV PORT=8080 \
     SITESPEED_BIN="/usr/src/app/bin/sitespeed.js"
 
-EXPOSE 3001
+EXPOSE 8080
 
 ENTRYPOINT ["./sitespeed-service"]
