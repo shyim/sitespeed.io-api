@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/getsentry/sentry-go"
 	"github.com/shyim/sitespeed-api/internal/cleanup"
 	"github.com/shyim/sitespeed-api/internal/handler"
 	"github.com/shyim/sitespeed-api/internal/storage"
@@ -14,6 +15,20 @@ import (
 
 func main() {
 	ctx := context.Background()
+
+	// Initialize Sentry if DSN is configured
+	if dsn := os.Getenv("SENTRY_DSN"); dsn != "" {
+		err := sentry.Init(sentry.ClientOptions{
+			Dsn:              dsn,
+			EnableTracing:    true,
+			TracesSampleRate: 1.0,
+		})
+		if err != nil {
+			log.Fatalf("Failed to initialize Sentry: %v", err)
+		}
+		defer sentry.Flush(2 * time.Second)
+		log.Println("Sentry initialized")
+	}
 
 	storageService, err := storage.NewService(ctx)
 	if err != nil {
@@ -70,6 +85,11 @@ func recoverMiddleware(next http.Handler) http.Handler {
 		defer func() {
 			if err := recover(); err != nil {
 				log.Printf("Panic: %v", err)
+				if hub := sentry.GetHubFromContext(r.Context()); hub != nil {
+					hub.RecoverWithContext(r.Context(), err)
+				} else {
+					sentry.CurrentHub().RecoverWithContext(r.Context(), err)
+				}
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()
