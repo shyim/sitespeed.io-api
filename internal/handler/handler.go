@@ -97,6 +97,9 @@ func (h *Handler) HandleAnalyze(w http.ResponseWriter, r *http.Request) {
 		"--browsertime.chrome.cleanUserDataDir=true",
 		"--browsertime.iterations", "1",
 	}
+	for key, value := range req.Headers {
+		args = append(args, "--browsertime.requestheader", fmt.Sprintf("%s:%s", key, value))
+	}
 	args = append(args, req.URLs...)
 
 	cmd := exec.Command("node", args...)
