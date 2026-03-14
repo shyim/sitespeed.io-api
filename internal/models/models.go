@@ -6,7 +6,8 @@ type AnalyzeRequest struct {
 }
 
 type ApiAnalyzeRequest struct {
-	URLs []string `json:"urls"`
+	URLs    []string          `json:"urls"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 type ErrorResponse struct {
