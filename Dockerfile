@@ -10,13 +10,11 @@
      --mount=type=cache,target=/go/pkg \
      CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o sitespeed-service ./cmd/api
 
- FROM sitespeedio/sitespeed.io:latest
+ FROM alpine:latest
+ RUN apk add --no-cache ca-certificates
  WORKDIR /app
 
  COPY --from=build /app/sitespeed-service .
-
- ENV PORT=8080 \
-     SITESPEED_BIN="/usr/src/app/bin/sitespeed.js"
 
  EXPOSE 8080
 

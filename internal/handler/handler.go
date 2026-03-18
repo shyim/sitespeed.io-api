@@ -10,21 +10,22 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/shyim/sitespeed-api/internal/models"
+	"github.com/shyim/sitespeed-api/internal/runner"
 	"github.com/shyim/sitespeed-api/internal/storage"
 	"github.com/shyim/sitespeed-api/internal/utils"
 )
 
 type Handler struct {
 	storage *storage.Service
+	runner  runner.Runner
 }
 
-func NewHandler(storage *storage.Service) *Handler {
-	return &Handler{storage: storage}
+func NewHandler(storage *storage.Service, r runner.Runner) *Handler {
+	return &Handler{storage: storage, runner: r}
 }
 
 func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
@@ -68,52 +69,19 @@ func (h *Handler) HandleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	tempPath := os.TempDir()
-	resultDir := filepath.Join(tempPath, "sitespeed", id)
+	log.Printf("Starting sitespeed analysis for %s with URLs: %v", id, req.URLs)
 
-	if err := os.RemoveAll(resultDir); err != nil {
-		log.Printf("Failed to clean result dir: %v", err)
-	}
-	if err := os.MkdirAll(resultDir, 0755); err != nil {
-		renderError(w, "Failed to create directory", nil, http.StatusInternalServerError)
+	resultDir, err := h.runner.RunAnalysis(r.Context(), id, req)
+	if err != nil {
+		log.Printf("Sitespeed failed: %v", err)
+		renderError(w, "Failed to run sitespeed analysis", awsString(err.Error()), http.StatusInternalServerError)
 		return
 	}
 	defer os.RemoveAll(resultDir)
 
-	log.Printf("Starting sitespeed analysis for %s with URLs: %v", id, req.URLs)
+	log.Printf("Sitespeed analysis completed for %s", id)
 
-	sitespeedBin := os.Getenv("SITESPEED_BIN")
-	if sitespeedBin == "" {
-		sitespeedBin = "sitespeed.io"
-	}
-
-	args := []string{
-		sitespeedBin,
-		"--outputFolder", resultDir,
-		"--plugins.add", "analysisstorer",
-		"--visualMetrics",
-		"--video",
-		"--viewPort", "1920x1080",
-		"--browsertime.chrome.cleanUserDataDir=true",
-		"--browsertime.iterations", "1",
-	}
-	for key, value := range req.Headers {
-		args = append(args, "--browsertime.requestheader", fmt.Sprintf("%s:%s", key, value))
-	}
-	args = append(args, req.URLs...)
-
-	cmd := exec.Command("node", args...)
-
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		log.Printf("Sitespeed failed: %s", stderr.String())
-		renderError(w, "Failed to run sitespeed analysis", awsString(stderr.String()), http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("Sitespeed analysis completed for shop %s", id)
+	tempPath := os.TempDir()
 
 	pagesDir := filepath.Join(resultDir, "pages")
 	pages, err := os.ReadDir(pagesDir)

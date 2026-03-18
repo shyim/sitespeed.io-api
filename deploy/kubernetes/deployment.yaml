@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sitespeed-api
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sitespeed-api
+  template:
+    metadata:
+      labels:
+        app: sitespeed-api
+    spec:
+      serviceAccountName: sitespeed-api
+      containers:
+        - name: api
+          image: ghcr.io/shyim/sitespeed-api:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: RUNNER_TYPE
+              value: kubernetes
+            - name: SITESPEED_IMAGE
+              value: sitespeedio/sitespeed.io:latest
+            - name: PORT
+              value: "8080"
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sitespeed-api
+                  key: s3-access-key
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sitespeed-api
+                  key: s3-secret-key
+            - name: S3_BUCKET_NAME
+              value: sitespeed-results
+            - name: AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sitespeed-api
+                  key: auth-token
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 100m
+            limits:
+              memory: 256Mi
+              cpu: 500m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sitespeed-api
+  namespace: default
+spec:
+  selector:
+    app: sitespeed-api
+  ports:
+    - port: 80
+      targetPort: 8080

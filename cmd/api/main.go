@@ -9,7 +9,9 @@ import (
 
 	"github.com/getsentry/sentry-go"
 	"github.com/shyim/sitespeed-api/internal/cleanup"
+	"github.com/shyim/sitespeed-api/internal/docker"
 	"github.com/shyim/sitespeed-api/internal/handler"
+	"github.com/shyim/sitespeed-api/internal/runner"
 	"github.com/shyim/sitespeed-api/internal/storage"
 )
 
@@ -35,44 +37,72 @@ func main() {
 		log.Fatalf("Failed to initialize storage service: %v", err)
 	}
 
-	h := handler.NewHandler(storageService)
+	r, err := createRunner(ctx)
+	if err != nil {
+		log.Fatalf("Failed to initialize runner: %v", err)
+	}
+	defer r.Close()
+
+	h := handler.NewHandler(storageService, r)
 
 	// Start background cleanup
-	cleanup.Start()
+	cleanup.Start(r)
 
 	mux := http.NewServeMux()
 
 	// Register routes with Go 1.22+ patterns
 	mux.HandleFunc("POST /api/result/{id}", h.HandleAnalyze)
 	mux.HandleFunc("DELETE /api/result/{id}", h.HandleDeleteResult)
-	
+
 	// Wildcard matching for results
 	mux.HandleFunc("GET /result/{id}/{path...}", h.HandleGetResult)
-	
+
 	mux.HandleFunc("GET /screenshot/{id}", h.HandleGetScreenshot)
 
 	// Apply middleware: Logger -> Recoverer -> Auth -> Mux
 	// Note: AuthMiddleware in the handler only checks /api paths, so wrapping the whole mux is fine.
-	
+
 	finalHandler := h.AuthMiddleware(mux)
 	finalHandler = recoverMiddleware(finalHandler)
 	finalHandler = loggingMiddleware(finalHandler)
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
-	log.Printf("Server starting on port %s", port)
-	if err := http.ListenAndServe(":"+port, finalHandler); err != nil {
+	log.Println("Server starting on port 8080")
+	if err := http.ListenAndServe(":8080", finalHandler); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
+}
+
+func createRunner(ctx context.Context) (runner.Runner, error) {
+	runnerType := os.Getenv("RUNNER_TYPE")
+
+	switch runnerType {
+	case "kubernetes":
+		log.Println("Using Kubernetes runner")
+		return createKubernetesRunner(ctx)
+	default:
+		log.Println("Using Docker runner")
+		return createDockerRunner(ctx)
+	}
+}
+
+func createDockerRunner(ctx context.Context) (runner.Runner, error) {
+	r, err := docker.NewRunner()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := r.EnsureImage(ctx); err != nil {
+		r.Close()
+		return nil, err
+	}
+
+	return r, nil
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		// Wrap ResponseWriter to capture status code could be added here, 
+		// Wrap ResponseWriter to capture status code could be added here,
 		// but keeping it simple for now.
 		log.Printf("Started %s %s", r.Method, r.URL.Path)
 		next.ServeHTTP(w, r)
