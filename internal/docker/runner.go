@@ -74,6 +74,7 @@ func NewRunner() (*Runner, error) {
 		image:         img,
 		resultBaseDir: baseDir,
 		timeout:       timeout,
+		networkName:   os.Getenv("DOCKER_NETWORK"),
 		maxConcurrent: make(chan struct{}, maxConcurrent),
 	}
 
@@ -141,6 +142,13 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 	}
 
 	var networkCfg *network.NetworkingConfig
+	if r.networkName != "" {
+		networkCfg = &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				r.networkName: {},
+			},
+		}
+	}
 
 	containerName := fmt.Sprintf("sitespeed-%s", id)
 
