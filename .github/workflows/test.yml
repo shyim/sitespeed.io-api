@@ -24,4 +24,6 @@ jobs:
       - name: Test
         uses: robherley/go-test-action@v0
         with:
-          testArguments: -count=1 ./...
+          testArguments: -count=1 -timeout 10m ./...
+        env:
+          INTEGRATION_DOCKER: "1"
