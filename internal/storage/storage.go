@@ -11,6 +11,28 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
+type Config struct {
+	ServiceURL            string
+	AccessKey             string
+	SecretKey             string
+	BucketName            string
+	DisablePayloadSigning bool
+}
+
+func ConfigFromEnv() Config {
+	bucketName := os.Getenv("S3_BUCKET_NAME")
+	if bucketName == "" {
+		bucketName = "sitespeed-results"
+	}
+	return Config{
+		ServiceURL:            os.Getenv("S3_SERVICE_URL"),
+		AccessKey:             os.Getenv("S3_ACCESS_KEY"),
+		SecretKey:             os.Getenv("S3_SECRET_KEY"),
+		BucketName:            bucketName,
+		DisablePayloadSigning: os.Getenv("S3_DISABLE_PAYLOAD_SIGNING") != "false",
+	}
+}
+
 type Service struct {
 	client                *s3.Client
 	bucketName            string
@@ -18,28 +40,23 @@ type Service struct {
 }
 
 func NewService(ctx context.Context) (*Service, error) {
-	serviceURL := os.Getenv("S3_SERVICE_URL")
-	accessKey := os.Getenv("S3_ACCESS_KEY")
-	secretKey := os.Getenv("S3_SECRET_KEY")
-	bucketName := os.Getenv("S3_BUCKET_NAME")
-	if bucketName == "" {
-		bucketName = "sitespeed-results"
-	}
-	disablePayloadSigning := os.Getenv("S3_DISABLE_PAYLOAD_SIGNING") != "false"
+	return NewServiceWithConfig(ctx, ConfigFromEnv())
+}
 
-	cfg, err := config.LoadDefaultConfig(ctx,
+func NewServiceWithConfig(ctx context.Context, cfg Config) (*Service, error) {
+	awsCfg, err := config.LoadDefaultConfig(ctx,
 		config.WithCredentialsProvider(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
 			return aws.Credentials{
-				AccessKeyID:     accessKey,
-				SecretAccessKey: secretKey,
+				AccessKeyID:     cfg.AccessKey,
+				SecretAccessKey: cfg.SecretKey,
 			}, nil
 		})),
-		config.WithRegion("us-east-1"), // Region is usually required but often ignored with custom endpoints
+		config.WithRegion("us-east-1"),
 		config.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-			if serviceURL != "" {
+			if cfg.ServiceURL != "" {
 				return aws.Endpoint{
-					URL:           serviceURL,
-					SigningRegion: "us-east-1", 
+					URL:           cfg.ServiceURL,
+					SigningRegion: "us-east-1",
 				}, nil
 			}
 			return aws.Endpoint{}, &aws.EndpointNotFoundError{}
@@ -49,14 +66,14 @@ func NewService(ctx context.Context) (*Service, error) {
 		return nil, err
 	}
 
-	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		o.UsePathStyle = true
 	})
 
 	return &Service{
 		client:                client,
-		bucketName:            bucketName,
-		disablePayloadSigning: disablePayloadSigning,
+		bucketName:            cfg.BucketName,
+		disablePayloadSigning: cfg.DisablePayloadSigning,
 	}, nil
 }
 
