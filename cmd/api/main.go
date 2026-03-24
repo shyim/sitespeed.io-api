@@ -50,17 +50,11 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// Register routes with Go 1.22+ patterns
 	mux.HandleFunc("POST /api/result/{id}", h.HandleAnalyze)
 	mux.HandleFunc("DELETE /api/result/{id}", h.HandleDeleteResult)
-
-	// Wildcard matching for results
 	mux.HandleFunc("GET /result/{id}/{path...}", h.HandleGetResult)
 
 	mux.HandleFunc("GET /screenshot/{id}", h.HandleGetScreenshot)
-
-	// Apply middleware: Logger -> Recoverer -> Auth -> Mux
-	// Note: AuthMiddleware in the handler only checks /api paths, so wrapping the whole mux is fine.
 
 	finalHandler := h.AuthMiddleware(mux)
 	finalHandler = recoverMiddleware(finalHandler)
@@ -102,8 +96,6 @@ func createDockerRunner(ctx context.Context) (runner.Runner, error) {
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		// Wrap ResponseWriter to capture status code could be added here,
-		// but keeping it simple for now.
 		log.Printf("Started %s %s", r.Method, r.URL.Path)
 		next.ServeHTTP(w, r)
 		log.Printf("Completed %s %s in %v", r.Method, r.URL.Path, time.Since(start))

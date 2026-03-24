@@ -24,8 +24,6 @@ type AnalyzeResponse struct {
 	TransferSize          float64 `json:"transferSize"`
 }
 
-// Internal Sitespeed Data Models
-
 type BrowserTime struct {
 	Timings         *Timings         `json:"timings"`
 	GoogleWebVitals *GoogleWebVitals `json:"googleWebVitals"`

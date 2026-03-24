@@ -88,11 +88,6 @@ func (s *Service) UploadFile(ctx context.Context, key, filePath string) error {
 }
 
 func (s *Service) UploadStream(ctx context.Context, key string, stream io.Reader) error {
-	// Note: DisablePayloadSigning is not directly set on PutObjectInput in v2 
-	// but handled via config or middleware if needed. 
-	// For now, we proceed with standard PutObject. 
-	// If custom signing is needed it requires more setup, but usually standard works.
-
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.bucketName),
 		Key:    aws.String(key),
