@@ -13,6 +13,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
@@ -197,7 +198,7 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 	podsClient := r.clientset.CoreV1().Pods(r.namespace)
 
 	// Clean up any existing pod with same name
-	if err := podsClient.Delete(ctx, podName, metav1.DeleteOptions{}); err != nil {
+	if err := podsClient.Delete(ctx, podName, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
 		observability.Errorf(ctx, "Failed to delete existing pod %s: %v", podName, err)
 	}
 
@@ -354,17 +355,24 @@ func extractTar(reader io.Reader, destDir string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return fmt.Errorf("mkdir failed: %w", err)
 			}
-			f, err := os.Create(target)
-			if err != nil {
-				return fmt.Errorf("create file failed: %w", err)
-			}
-			defer func() { _ = f.Close() }()
-			if _, err := io.Copy(f, tr); err != nil {
-				return fmt.Errorf("write file failed: %w", err)
+			if err := extractFile(target, tr); err != nil {
+				return err
 			}
 		}
 	}
 
+	return nil
+}
+
+func extractFile(target string, r io.Reader) error {
+	f, err := os.Create(target)
+	if err != nil {
+		return fmt.Errorf("create file failed: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := io.Copy(f, r); err != nil {
+		return fmt.Errorf("write file failed: %w", err)
+	}
 	return nil
 }
 

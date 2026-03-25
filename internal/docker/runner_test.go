@@ -29,7 +29,7 @@ func TestRunAnalysisGoogle(t *testing.T) {
 	runner, err := docker.NewRunner()
 	require.NoError(t, err)
 	defer func() {
-		require.NoError(t, runner.Close())
+		assert.NoError(t, runner.Close())
 	}()
 
 	require.NoError(t, runner.EnsureImage(ctx))
@@ -39,7 +39,7 @@ func TestRunAnalysisGoogle(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer func() {
-		require.NoError(t, os.RemoveAll(resultDir))
+		assert.NoError(t, os.RemoveAll(resultDir))
 	}()
 
 	// Verify browsertime summary exists and is valid JSON

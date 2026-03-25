@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -63,36 +61,26 @@ func Tracer(name string) trace.Tracer {
 }
 
 func Printf(ctx context.Context, format string, args ...any) {
-	log.Printf(withTraceContext(ctx, format), args...)
+	msg := fmt.Sprintf(format, args...)
+	log.Print(withTracePrefix(ctx, msg))
 }
 
 func Errorf(ctx context.Context, format string, args ...any) {
-	log.Printf(withTraceContext(ctx, "ERROR: "+format), args...)
+	msg := fmt.Sprintf(format, args...)
+	log.Print(withTracePrefix(ctx, "ERROR: "+msg))
 }
 
-func AttributesFromContext(ctx context.Context) []attribute.KeyValue {
+func withTracePrefix(ctx context.Context, msg string) string {
 	spanContext := trace.SpanContextFromContext(ctx)
 	if !spanContext.IsValid() {
-		return nil
+		return msg
 	}
 
-	return []attribute.KeyValue{
-		attribute.String("trace.id", spanContext.TraceID().String()),
-		attribute.String("span.id", spanContext.SpanID().String()),
-	}
-}
-
-func withTraceContext(ctx context.Context, format string) string {
-	spanContext := trace.SpanContextFromContext(ctx)
-	if !spanContext.IsValid() {
-		return format
-	}
-
-	return strings.Join([]string{
-		fmt.Sprintf("trace_id=%s", spanContext.TraceID().String()),
-		fmt.Sprintf("span_id=%s", spanContext.SpanID().String()),
-		format,
-	}, " ")
+	return fmt.Sprintf("trace_id=%s span_id=%s %s",
+		spanContext.TraceID().String(),
+		spanContext.SpanID().String(),
+		msg,
+	)
 }
 
 func tracingConfigured() bool {

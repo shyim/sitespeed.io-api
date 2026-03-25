@@ -294,17 +294,24 @@ func (r *Runner) copyFromContainer(ctx context.Context, containerID, srcPath, de
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return fmt.Errorf("mkdir failed: %w", err)
 			}
-			f, err := os.Create(target)
-			if err != nil {
-				return fmt.Errorf("create file failed: %w", err)
-			}
-			defer func() { _ = f.Close() }()
-			if _, err := io.Copy(f, tr); err != nil {
-				return fmt.Errorf("write file failed: %w", err)
+			if err := extractFile(target, tr); err != nil {
+				return err
 			}
 		}
 	}
 
+	return nil
+}
+
+func extractFile(target string, r io.Reader) error {
+	f, err := os.Create(target)
+	if err != nil {
+		return fmt.Errorf("create file failed: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := io.Copy(f, r); err != nil {
+		return fmt.Errorf("write file failed: %w", err)
+	}
 	return nil
 }
 

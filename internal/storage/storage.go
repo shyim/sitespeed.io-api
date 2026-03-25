@@ -114,7 +114,7 @@ func (s *Service) UploadStream(ctx context.Context, key string, stream io.Reader
 		return fmt.Errorf("upload %s: %w", key, err)
 	}
 
-	return err
+	return nil
 }
 
 func (s *Service) DownloadFile(ctx context.Context, key, destinationPath string) error {
