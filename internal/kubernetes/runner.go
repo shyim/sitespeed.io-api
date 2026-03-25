@@ -24,6 +24,9 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 
 	"github.com/shyim/sitespeed-api/internal/models"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 const labelApp = "sitespeed-api"
@@ -111,6 +114,14 @@ func NewRunner() (*Runner, error) {
 }
 
 func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnalyzeRequest) (string, error) {
+	ctx, span := otel.Tracer("kubernetes").Start(ctx, "Kubernetes.RunAnalysis")
+	span.SetAttributes(
+		attribute.String("analysis.id", id),
+		attribute.String("k8s.namespace", r.namespace),
+		attribute.String("k8s.image", r.image),
+	)
+	defer span.End()
+
 	select {
 	case r.maxConcurrent <- struct{}{}:
 		defer func() { <-r.maxConcurrent }()
@@ -189,8 +200,11 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 
 	createdPod, err := podsClient.Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "pod creation failed")
 		return "", fmt.Errorf("failed to create pod: %w", err)
 	}
+	span.SetAttributes(attribute.String("k8s.pod_name", podName))
 
 	deletePod := func() {
 		deleteCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -18,6 +18,9 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/shyim/sitespeed-api/internal/models"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 const labelApp = "sitespeed-api"
@@ -103,6 +106,13 @@ func (r *Runner) EnsureImage(ctx context.Context) error {
 }
 
 func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnalyzeRequest) (string, error) {
+	ctx, span := otel.Tracer("docker").Start(ctx, "Docker.RunAnalysis")
+	span.SetAttributes(
+		attribute.String("analysis.id", id),
+		attribute.String("docker.image", r.image),
+	)
+	defer span.End()
+
 	select {
 	case r.maxConcurrent <- struct{}{}:
 		defer func() { <-r.maxConcurrent }()
@@ -154,9 +164,12 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 
 	resp, err := r.client.ContainerCreate(ctx, containerCfg, hostCfg, networkCfg, nil, containerName)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "container creation failed")
 		return "", fmt.Errorf("failed to create container: %w", err)
 	}
 	containerID := resp.ID
+	span.SetAttributes(attribute.String("docker.container_id", containerID))
 
 	removeContainer := func() {
 		removeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

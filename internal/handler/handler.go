@@ -17,6 +17,9 @@ import (
 	"github.com/shyim/sitespeed-api/internal/runner"
 	"github.com/shyim/sitespeed-api/internal/storage"
 	"github.com/shyim/sitespeed-api/internal/utils"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type Handler struct {
@@ -45,6 +48,10 @@ func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 }
 
 func (h *Handler) HandleAnalyze(w http.ResponseWriter, r *http.Request) {
+	ctx, span := otel.Tracer("handler").Start(r.Context(), "HandleAnalyze")
+	defer span.End()
+	r = r.WithContext(ctx)
+
 	id := r.PathValue("id")
 	if id == "" || strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") {
 		http.Error(w, "Invalid ID", http.StatusBadRequest)
@@ -69,10 +76,17 @@ func (h *Handler) HandleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	span.SetAttributes(
+		attribute.String("analysis.id", id),
+		attribute.Int("analysis.url_count", len(req.URLs)),
+	)
+
 	log.Printf("Starting sitespeed analysis for %s with URLs: %v", id, req.URLs)
 
 	resultDir, err := h.runner.RunAnalysis(r.Context(), id, req)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "analysis failed")
 		log.Printf("Sitespeed failed: %v", err)
 		renderError(w, "Failed to run sitespeed analysis", awsString(err.Error()), http.StatusInternalServerError)
 		return
@@ -179,6 +193,10 @@ func (h *Handler) HandleAnalyze(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleGetResult(w http.ResponseWriter, r *http.Request) {
+	ctx, span := otel.Tracer("handler").Start(r.Context(), "HandleGetResult")
+	defer span.End()
+	r = r.WithContext(ctx)
+
 	id := r.PathValue("id")
 	path := r.PathValue("path")
 
@@ -258,6 +276,10 @@ func (h *Handler) HandleGetResult(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleDeleteResult(w http.ResponseWriter, r *http.Request) {
+	ctx, span := otel.Tracer("handler").Start(r.Context(), "HandleDeleteResult")
+	defer span.End()
+	r = r.WithContext(ctx)
+
 	id := r.PathValue("id")
 	if id == "" || strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") {
 		http.Error(w, "Invalid ID", http.StatusBadRequest)
@@ -275,6 +297,10 @@ func (h *Handler) HandleDeleteResult(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleGetScreenshot(w http.ResponseWriter, r *http.Request) {
+	ctx, span := otel.Tracer("handler").Start(r.Context(), "HandleGetScreenshot")
+	defer span.End()
+	r = r.WithContext(ctx)
+
 	id := r.PathValue("id")
 	if id == "" || strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") {
 		http.Error(w, "Invalid ID", http.StatusBadRequest)

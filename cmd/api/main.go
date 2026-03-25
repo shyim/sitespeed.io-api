@@ -13,10 +13,21 @@ import (
 	"github.com/shyim/sitespeed-api/internal/handler"
 	"github.com/shyim/sitespeed-api/internal/runner"
 	"github.com/shyim/sitespeed-api/internal/storage"
+	"github.com/shyim/sitespeed-api/internal/tracing"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 func main() {
 	ctx := context.Background()
+
+	// Initialize OpenTelemetry if OTEL_EXPORTER_OTLP_ENDPOINT is configured
+	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" {
+		shutdown, err := tracing.Init(ctx)
+		if err != nil {
+			log.Fatalf("Failed to initialize OpenTelemetry: %v", err)
+		}
+		defer shutdown(ctx)
+	}
 
 	// Initialize Sentry if DSN is configured
 	if dsn := os.Getenv("SENTRY_DSN"); dsn != "" {
@@ -58,6 +69,7 @@ func main() {
 
 	finalHandler := h.AuthMiddleware(mux)
 	finalHandler = recoverMiddleware(finalHandler)
+	finalHandler = otelhttp.NewHandler(finalHandler, "http.request")
 	finalHandler = loggingMiddleware(finalHandler)
 
 	log.Println("Server starting on port 8080")

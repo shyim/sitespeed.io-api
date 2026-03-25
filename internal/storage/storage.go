@@ -9,6 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type Config struct {
@@ -78,6 +80,10 @@ func NewServiceWithConfig(ctx context.Context, cfg Config) (*Service, error) {
 }
 
 func (s *Service) UploadFile(ctx context.Context, key, filePath string) error {
+	ctx, span := otel.Tracer("storage").Start(ctx, "S3.UploadFile")
+	span.SetAttributes(attribute.String("s3.key", key))
+	defer span.End()
+
 	file, err := os.Open(filePath)
 	if err != nil {
 		return err
@@ -97,6 +103,10 @@ func (s *Service) UploadStream(ctx context.Context, key string, stream io.Reader
 }
 
 func (s *Service) DownloadFile(ctx context.Context, key, destinationPath string) error {
+	ctx, span := otel.Tracer("storage").Start(ctx, "S3.DownloadFile")
+	span.SetAttributes(attribute.String("s3.key", key))
+	defer span.End()
+
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucketName),
 		Key:    aws.String(key),
@@ -117,6 +127,10 @@ func (s *Service) DownloadFile(ctx context.Context, key, destinationPath string)
 }
 
 func (s *Service) DeleteFile(ctx context.Context, key string) error {
+	ctx, span := otel.Tracer("storage").Start(ctx, "S3.DeleteFile")
+	span.SetAttributes(attribute.String("s3.key", key))
+	defer span.End()
+
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucketName),
 		Key:    aws.String(key),
@@ -125,6 +139,10 @@ func (s *Service) DeleteFile(ctx context.Context, key string) error {
 }
 
 func (s *Service) GetFile(ctx context.Context, key string) (io.ReadCloser, *string, *time.Time, *string, error) {
+	ctx, span := otel.Tracer("storage").Start(ctx, "S3.GetFile")
+	span.SetAttributes(attribute.String("s3.key", key))
+	defer span.End()
+
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucketName),
 		Key:    aws.String(key),
