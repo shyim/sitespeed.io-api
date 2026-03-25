@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"mime"
 	"net/http"
 	"net/url"
@@ -14,9 +13,12 @@ import (
 	"strings"
 
 	"github.com/shyim/sitespeed-api/internal/models"
+	"github.com/shyim/sitespeed-api/internal/observability"
 	"github.com/shyim/sitespeed-api/internal/runner"
 	"github.com/shyim/sitespeed-api/internal/storage"
 	"github.com/shyim/sitespeed-api/internal/utils"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type Handler struct {
@@ -46,46 +48,64 @@ func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 
 func (h *Handler) HandleAnalyze(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	ctx, span := observability.Tracer("handler").Start(r.Context(), "handler.HandleAnalyze")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("analysis.id", id))
+
 	if id == "" || strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") {
+		span.SetStatus(codes.Error, "invalid analysis id")
 		http.Error(w, "Invalid ID", http.StatusBadRequest)
 		return
 	}
 
 	var req models.ApiAnalyzeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "invalid request body")
 		http.Error(w, "Invalid Request Body", http.StatusBadRequest)
 		return
 	}
+	span.SetAttributes(attribute.Int("analysis.url_count", len(req.URLs)))
 
 	if len(req.URLs) == 0 || len(req.URLs) > 5 {
+		span.SetStatus(codes.Error, "invalid url count")
 		renderError(w, "URLs must be between 1 and 5 items", nil, http.StatusBadRequest)
 		return
 	}
 
 	for _, u := range req.URLs {
 		if _, err := url.ParseRequestURI(u); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "invalid request url")
 			renderError(w, fmt.Sprintf("Invalid URL: %s", u), nil, http.StatusBadRequest)
 			return
 		}
 	}
 
-	log.Printf("Starting sitespeed analysis for %s with URLs: %v", id, req.URLs)
+	observability.Printf(ctx, "Starting sitespeed analysis for %s with URLs: %v", id, req.URLs)
 
-	resultDir, err := h.runner.RunAnalysis(r.Context(), id, req)
+	resultDir, err := h.runner.RunAnalysis(ctx, id, req)
 	if err != nil {
-		log.Printf("Sitespeed failed: %v", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "sitespeed analysis failed")
+		observability.Errorf(ctx, "Sitespeed failed: %v", err)
 		renderError(w, "Failed to run sitespeed analysis", awsString(err.Error()), http.StatusInternalServerError)
 		return
 	}
-	defer os.RemoveAll(resultDir)
+	defer removeAllQuietly(resultDir)
 
-	log.Printf("Sitespeed analysis completed for %s", id)
+	observability.Printf(ctx, "Sitespeed analysis completed for %s", id)
 
 	tempPath := os.TempDir()
 
 	pagesDir := filepath.Join(resultDir, "pages")
 	pages, err := os.ReadDir(pagesDir)
 	if err != nil || len(pages) == 0 {
+		if err != nil {
+			span.RecordError(err)
+		}
+		span.SetStatus(codes.Error, "web vital data not found")
 		renderError(w, "Web vital data not found", nil, http.StatusInternalServerError)
 		return
 	}
@@ -99,6 +119,7 @@ func (h *Handler) HandleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if firstPage == "" {
+		span.SetStatus(codes.Error, "web vital page directory missing")
 		renderError(w, "Web vital data not found", nil, http.StatusInternalServerError)
 		return
 	}
@@ -108,49 +129,61 @@ func (h *Handler) HandleAnalyze(w http.ResponseWriter, r *http.Request) {
 
 	browsertimeFile, err := os.Open(webvitalDataPath)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "web vital data missing")
 		renderError(w, "Web vital data not found", nil, http.StatusInternalServerError)
 		return
 	}
-	defer browsertimeFile.Close()
+	defer closeQuietly(browsertimeFile)
 
 	var browsertimeData models.BrowserTime
 	if err := json.NewDecoder(browsertimeFile).Decode(&browsertimeData); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to parse web vital data")
 		renderError(w, "Failed to parse web vital data", nil, http.StatusInternalServerError)
 		return
 	}
 
 	var pagexrayData models.PageXray
 	if pagexrayFile, err := os.Open(pagexrayDataPath); err == nil {
-		defer pagexrayFile.Close()
-		json.NewDecoder(pagexrayFile).Decode(&pagexrayData)
+		defer closeQuietly(pagexrayFile)
+		if err := json.NewDecoder(pagexrayFile).Decode(&pagexrayData); err != nil {
+			span.RecordError(err)
+			observability.Errorf(ctx, "Failed to parse pagexray data: %v", err)
+		}
 	}
 
 	screenshotPath := filepath.Join(resultDir, "pages", firstPage, "data", "screenshots", "1", "afterPageCompleteCheck.png")
 	s3ScreenshotPath := fmt.Sprintf("results/%s/screenshot.png", id)
 
 	if _, err := os.Stat(screenshotPath); err == nil {
-		if err := h.storage.UploadFile(r.Context(), s3ScreenshotPath, screenshotPath); err != nil {
-			log.Printf("Failed to upload screenshot: %v", err)
+		if err := h.storage.UploadFile(ctx, s3ScreenshotPath, screenshotPath); err != nil {
+			span.RecordError(err)
+			observability.Errorf(ctx, "Failed to upload screenshot: %v", err)
 		}
 	}
 
 	zipPath := filepath.Join(tempPath, fmt.Sprintf("%s.zip", id))
-	os.Remove(zipPath) // Ensure it doesn't exist
+	removeQuietly(zipPath) // Ensure it doesn't exist
 
 	if err := utils.ZipDirectory(resultDir, zipPath); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to create result zip")
 		renderError(w, "Failed to create zip", awsString(err.Error()), http.StatusInternalServerError)
 		return
 	}
-	defer os.Remove(zipPath)
+	defer removeQuietly(zipPath)
 
-	if err := h.storage.UploadFile(r.Context(), fmt.Sprintf("results/%s/result.zip", id), zipPath); err != nil {
+	if err := h.storage.UploadFile(ctx, fmt.Sprintf("results/%s/result.zip", id), zipPath); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to upload result zip")
 		renderError(w, "Failed to upload zip", awsString(err.Error()), http.StatusInternalServerError)
 		return
 	}
 
 	// Clean cache if exists
 	cacheZipPath := filepath.Join(tempPath, "sitespeed-cache", fmt.Sprintf("%s.zip", id))
-	os.Remove(cacheZipPath)
+	removeQuietly(cacheZipPath)
 
 	resp := models.AnalyzeResponse{}
 	if browsertimeData.GoogleWebVitals != nil {
@@ -175,14 +208,22 @@ func (h *Handler) HandleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to write response")
+	}
 }
 
 func (h *Handler) HandleGetResult(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	path := r.PathValue("path")
+	ctx, span := observability.Tracer("handler").Start(r.Context(), "handler.HandleGetResult")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("analysis.id", id))
 
 	if id == "" || strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") {
+		span.SetStatus(codes.Error, "invalid analysis id")
 		http.Error(w, "Invalid ID", http.StatusBadRequest)
 		return
 	}
@@ -192,11 +233,15 @@ func (h *Handler) HandleGetResult(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := os.Stat(zipPath); os.IsNotExist(err) {
 		if err := os.MkdirAll(filepath.Dir(zipPath), 0755); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "failed to create cache dir")
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
-		err := h.storage.DownloadFile(r.Context(), fmt.Sprintf("results/%s/result.zip", id), zipPath)
+		err := h.storage.DownloadFile(ctx, fmt.Sprintf("results/%s/result.zip", id), zipPath)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "failed to download result zip")
 			http.NotFound(w, r)
 			return
 		}
@@ -209,10 +254,12 @@ func (h *Handler) HandleGetResult(w http.ResponseWriter, r *http.Request) {
 
 	archive, err := zip.OpenReader(zipPath)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to open result zip")
 		http.NotFound(w, r)
 		return
 	}
-	defer archive.Close()
+	defer closeQuietly(archive)
 
 	var file *zip.File
 	for _, f := range archive.File {
@@ -240,10 +287,12 @@ func (h *Handler) HandleGetResult(w http.ResponseWriter, r *http.Request) {
 
 	rc, err := file.Open()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to open result file")
 		http.Error(w, "Failed to open file", http.StatusInternalServerError)
 		return
 	}
-	defer rc.Close()
+	defer closeQuietly(rc)
 
 	contentType := mime.TypeByExtension(filepath.Ext(file.Name))
 	if contentType == "" {
@@ -254,39 +303,60 @@ func (h *Handler) HandleGetResult(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=604800")
 	w.Header().Set("Last-Modified", file.Modified.UTC().Format(http.TimeFormat))
 
-	io.Copy(w, rc)
+	if _, err := io.Copy(w, rc); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to stream result file")
+	}
 }
 
 func (h *Handler) HandleDeleteResult(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	ctx, span := observability.Tracer("handler").Start(r.Context(), "handler.HandleDeleteResult")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("analysis.id", id))
 	if id == "" || strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") {
+		span.SetStatus(codes.Error, "invalid analysis id")
 		http.Error(w, "Invalid ID", http.StatusBadRequest)
 		return
 	}
 
-	h.storage.DeleteFile(r.Context(), fmt.Sprintf("results/%s/result.zip", id))
-	h.storage.DeleteFile(r.Context(), fmt.Sprintf("results/%s/screenshot.png", id))
+	if err := h.storage.DeleteFile(ctx, fmt.Sprintf("results/%s/result.zip", id)); err != nil {
+		span.RecordError(err)
+		observability.Errorf(ctx, "Failed to delete result zip for %s: %v", id, err)
+	}
+	if err := h.storage.DeleteFile(ctx, fmt.Sprintf("results/%s/screenshot.png", id)); err != nil {
+		span.RecordError(err)
+		observability.Errorf(ctx, "Failed to delete screenshot for %s: %v", id, err)
+	}
 
 	tempPath := os.TempDir()
 	zipPath := filepath.Join(tempPath, "sitespeed-cache", fmt.Sprintf("%s.zip", id))
-	os.Remove(zipPath)
+	removeQuietly(zipPath)
 
 	w.WriteHeader(http.StatusOK)
 }
 
 func (h *Handler) HandleGetScreenshot(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	ctx, span := observability.Tracer("handler").Start(r.Context(), "handler.HandleGetScreenshot")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("analysis.id", id))
 	if id == "" || strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") {
+		span.SetStatus(codes.Error, "invalid analysis id")
 		http.Error(w, "Invalid ID", http.StatusBadRequest)
 		return
 	}
 
-	stream, _, lastModified, etag, err := h.storage.GetFile(r.Context(), fmt.Sprintf("results/%s/screenshot.png", id))
+	stream, _, lastModified, etag, err := h.storage.GetFile(ctx, fmt.Sprintf("results/%s/screenshot.png", id))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to get screenshot")
 		http.NotFound(w, r)
 		return
 	}
-	defer stream.Close()
+	defer closeQuietly(stream)
 
 	w.Header().Set("Cache-Control", "public, max-age=604800")
 	w.Header().Set("Content-Type", "image/png")
@@ -297,13 +367,16 @@ func (h *Handler) HandleGetScreenshot(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Last-Modified", lastModified.UTC().Format(http.TimeFormat))
 	}
 
-	io.Copy(w, stream)
+	if _, err := io.Copy(w, stream); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to stream screenshot")
+	}
 }
 
 func renderError(w http.ResponseWriter, msg string, details *string, status int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(models.ErrorResponse{
+	_ = json.NewEncoder(w).Encode(models.ErrorResponse{
 		Error:   msg,
 		Details: details,
 	})
@@ -311,4 +384,18 @@ func renderError(w http.ResponseWriter, msg string, details *string, status int)
 
 func awsString(v string) *string {
 	return &v
+}
+
+func closeQuietly(c io.Closer) {
+	if c != nil {
+		_ = c.Close()
+	}
+}
+
+func removeQuietly(path string) {
+	_ = os.Remove(path)
+}
+
+func removeAllQuietly(path string) {
+	_ = os.RemoveAll(path)
 }

@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -24,6 +23,9 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 
 	"github.com/shyim/sitespeed-api/internal/models"
+	"github.com/shyim/sitespeed-api/internal/observability"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 const labelApp = "sitespeed-api"
@@ -111,10 +113,20 @@ func NewRunner() (*Runner, error) {
 }
 
 func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnalyzeRequest) (string, error) {
+	ctx, span := observability.Tracer("kubernetes-runner").Start(ctx, "kubernetes.RunAnalysis")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("analysis.id", id),
+		attribute.String("k8s.namespace", r.namespace),
+		attribute.String("k8s.image", r.image),
+		attribute.Int("analysis.url_count", len(req.URLs)),
+	)
+
 	select {
 	case r.maxConcurrent <- struct{}{}:
 		defer func() { <-r.maxConcurrent }()
 	case <-ctx.Done():
+		span.SetStatus(codes.Error, "timed out waiting for analysis slot")
 		return "", fmt.Errorf("timed out waiting for available analysis slot")
 	}
 
@@ -185,17 +197,24 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 	podsClient := r.clientset.CoreV1().Pods(r.namespace)
 
 	// Clean up any existing pod with same name
-	_ = podsClient.Delete(ctx, podName, metav1.DeleteOptions{})
+	if err := podsClient.Delete(ctx, podName, metav1.DeleteOptions{}); err != nil {
+		observability.Errorf(ctx, "Failed to delete existing pod %s: %v", podName, err)
+	}
 
 	createdPod, err := podsClient.Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to create pod")
 		return "", fmt.Errorf("failed to create pod: %w", err)
 	}
+	span.SetAttributes(attribute.String("k8s.pod_name", createdPod.Name))
 
 	deletePod := func() {
-		deleteCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		deleteCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		_ = podsClient.Delete(deleteCtx, podName, metav1.DeleteOptions{})
+		if err := podsClient.Delete(deleteCtx, podName, metav1.DeleteOptions{}); err != nil {
+			observability.Errorf(ctx, "Failed to delete pod %s: %v", podName, err)
+		}
 	}
 
 	// Watch for pod completion
@@ -204,13 +223,16 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 
 	phase, err := r.waitForPodCompletion(timeoutCtx, podName, createdPod.ResourceVersion)
 	if err != nil {
-		logs := r.getPodLogs(podName)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "error waiting for pod")
+		logs := r.getPodLogs(ctx, podName)
 		deletePod()
 		return "", fmt.Errorf("error waiting for pod: %w\nLogs: %s", err, logs)
 	}
 
 	if phase != corev1.PodSucceeded {
-		logs := r.getPodLogs(podName)
+		span.SetStatus(codes.Error, "sitespeed pod failed")
+		logs := r.getPodLogs(ctx, podName)
 		deletePod()
 		return "", fmt.Errorf("sitespeed pod failed (phase: %s): %s", phase, logs)
 	}
@@ -218,14 +240,18 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 	// Copy results from pod
 	localResultDir := filepath.Join(r.resultBaseDir, id)
 	if err := os.RemoveAll(localResultDir); err != nil {
-		log.Printf("Failed to clean result dir: %v", err)
+		observability.Errorf(ctx, "Failed to clean result dir: %v", err)
 	}
 	if err := os.MkdirAll(localResultDir, 0755); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to create result dir")
 		deletePod()
 		return "", fmt.Errorf("failed to create result dir: %w", err)
 	}
 
 	if err := r.copyFromPod(ctx, podName, "sitespeed", containerOutputDir, localResultDir); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to copy pod results")
 		deletePod()
 		return "", fmt.Errorf("failed to copy results from pod: %w", err)
 	}
@@ -332,19 +358,18 @@ func extractTar(reader io.Reader, destDir string) error {
 			if err != nil {
 				return fmt.Errorf("create file failed: %w", err)
 			}
+			defer func() { _ = f.Close() }()
 			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
 				return fmt.Errorf("write file failed: %w", err)
 			}
-			f.Close()
 		}
 	}
 
 	return nil
 }
 
-func (r *Runner) getPodLogs(podName string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func (r *Runner) getPodLogs(ctx context.Context, podName string) string {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 
 	tailLines := int64(50)
@@ -356,9 +381,12 @@ func (r *Runner) getPodLogs(podName string) string {
 	if err != nil {
 		return fmt.Sprintf("(failed to get logs: %v)", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
-	out, _ := io.ReadAll(stream)
+	out, err := io.ReadAll(stream)
+	if err != nil {
+		return fmt.Sprintf("(failed to read logs: %v)", err)
+	}
 	return string(out)
 }
 
@@ -373,8 +401,10 @@ func (r *Runner) CleanupOrphaned(ctx context.Context) error {
 	threshold := time.Now().Add(-2 * r.timeout)
 	for _, pod := range pods.Items {
 		if pod.CreationTimestamp.Time.Before(threshold) {
-			log.Printf("Cleaning up orphaned pod %s (created %s)", pod.Name, pod.CreationTimestamp.Format(time.RFC3339))
-			_ = r.clientset.CoreV1().Pods(r.namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{})
+			observability.Printf(ctx, "Cleaning up orphaned pod %s (created %s)", pod.Name, pod.CreationTimestamp.Format(time.RFC3339))
+			if err := r.clientset.CoreV1().Pods(r.namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
+				observability.Errorf(ctx, "Failed to delete orphaned pod %s: %v", pod.Name, err)
+			}
 		}
 	}
 
@@ -384,7 +414,7 @@ func (r *Runner) CleanupOrphaned(ctx context.Context) error {
 func (r *Runner) CleanupStaleResultDirs(maxAgeMinutes int) {
 	entries, err := os.ReadDir(r.resultBaseDir)
 	if err != nil {
-		log.Printf("Failed to read result base dir: %v", err)
+		observability.Errorf(context.Background(), "Failed to read result base dir: %v", err)
 		return
 	}
 
@@ -402,9 +432,9 @@ func (r *Runner) CleanupStaleResultDirs(maxAgeMinutes int) {
 		if now.Sub(info.ModTime()) > maxAge {
 			fullPath := filepath.Join(r.resultBaseDir, entry.Name())
 			if err := os.RemoveAll(fullPath); err != nil {
-				log.Printf("Failed to clean up stale result dir %s: %v", fullPath, err)
+				observability.Errorf(context.Background(), "Failed to clean up stale result dir %s: %v", fullPath, err)
 			} else {
-				log.Printf("Cleaned up stale result dir (%dmin old): %s", int(now.Sub(info.ModTime()).Minutes()), fullPath)
+				observability.Printf(context.Background(), "Cleaned up stale result dir (%dmin old): %s", int(now.Sub(info.ModTime()).Minutes()), fullPath)
 			}
 		}
 	}

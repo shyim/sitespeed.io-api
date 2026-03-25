@@ -8,33 +8,25 @@ import (
 	"testing"
 
 	"github.com/shyim/sitespeed-api/internal/utils"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestZipDirectory(t *testing.T) {
 	srcDir := t.TempDir()
 
 	// Create a directory structure
-	if err := os.MkdirAll(filepath.Join(srcDir, "subdir"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(srcDir, "root.txt"), []byte("root file"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(srcDir, "subdir", "nested.txt"), []byte("nested file"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "subdir"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "root.txt"), []byte("root file"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "subdir", "nested.txt"), []byte("nested file"), 0644))
 
 	zipPath := filepath.Join(t.TempDir(), "output.zip")
-	if err := utils.ZipDirectory(srcDir, zipPath); err != nil {
-		t.Fatalf("ZipDirectory failed: %v", err)
-	}
+	require.NoError(t, utils.ZipDirectory(srcDir, zipPath))
 
 	// Verify the zip contents
 	reader, err := zip.OpenReader(zipPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
+	require.NoError(t, err)
+	defer func() { _ = reader.Close() }()
 
 	var names []string
 	for _, f := range reader.File {
@@ -43,31 +35,18 @@ func TestZipDirectory(t *testing.T) {
 	sort.Strings(names)
 
 	expected := []string{"root.txt", "subdir/", "subdir/nested.txt"}
-	if len(names) != len(expected) {
-		t.Fatalf("expected %d entries, got %d: %v", len(expected), len(names), names)
-	}
-	for i, name := range names {
-		if name != expected[i] {
-			t.Errorf("entry %d: expected %q, got %q", i, expected[i], name)
-		}
-	}
+	assert.Equal(t, expected, names)
 }
 
 func TestZipDirectoryEmpty(t *testing.T) {
 	srcDir := t.TempDir()
 	zipPath := filepath.Join(t.TempDir(), "empty.zip")
 
-	if err := utils.ZipDirectory(srcDir, zipPath); err != nil {
-		t.Fatalf("ZipDirectory failed on empty dir: %v", err)
-	}
+	require.NoError(t, utils.ZipDirectory(srcDir, zipPath))
 
 	reader, err := zip.OpenReader(zipPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
+	require.NoError(t, err)
+	defer func() { _ = reader.Close() }()
 
-	if len(reader.File) != 0 {
-		t.Errorf("expected 0 entries in empty zip, got %d", len(reader.File))
-	}
+	assert.Empty(t, reader.File)
 }
