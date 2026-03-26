@@ -20,6 +20,7 @@ import (
 	"github.com/shyim/sitespeed-api/internal/observability"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const labelApp = "sitespeed-api"
@@ -36,7 +37,11 @@ type Runner struct {
 }
 
 func NewRunner() (*Runner, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.NewClientWithOpts(
+		client.FromEnv,
+		client.WithAPIVersionNegotiation(),
+		client.WithTraceProvider(noop.NewTracerProvider()),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create docker client: %w", err)
 	}
