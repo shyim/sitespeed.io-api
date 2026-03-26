@@ -88,10 +88,6 @@ func NewRunner() (*Runner, error) {
 }
 
 func (r *Runner) EnsureImage(ctx context.Context) error {
-	ctx, span := observability.Tracer("docker-runner").Start(ctx, "docker.EnsureImage")
-	defer span.End()
-	span.SetAttributes(attribute.String("docker.image", r.image))
-
 	_, err := r.client.ImageInspect(ctx, r.image)
 	if err == nil {
 		return nil
@@ -100,14 +96,10 @@ func (r *Runner) EnsureImage(ctx context.Context) error {
 	observability.Printf(ctx, "Pulling image %s", r.image)
 	reader, err := r.client.ImagePull(ctx, r.image, image.PullOptions{})
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "failed to pull image")
 		return fmt.Errorf("failed to pull image %s: %w", r.image, err)
 	}
 	defer func() { _ = reader.Close() }()
 	if _, err := io.Copy(io.Discard, reader); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "failed to read image pull response")
 		return fmt.Errorf("failed to read image pull response: %w", err)
 	}
 	observability.Printf(ctx, "Image %s pulled", r.image)
