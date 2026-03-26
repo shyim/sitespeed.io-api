@@ -30,7 +30,7 @@ func StartMinio(t *testing.T, ctx context.Context) storage.Config {
 		t.Fatalf("failed to start minio container: %v", err)
 	}
 	t.Cleanup(func() {
-		container.Terminate(context.Background())
+		_ = container.Terminate(context.Background())
 	})
 
 	endpoint, err := container.ConnectionString(ctx)
@@ -49,12 +49,6 @@ func StartMinio(t *testing.T, ctx context.Context) storage.Config {
 			}, nil
 		})),
 		config.WithRegion("us-east-1"),
-		config.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-			return aws.Endpoint{
-				URL:           serviceURL,
-				SigningRegion: "us-east-1",
-			}, nil
-		})),
 	)
 	if err != nil {
 		t.Fatalf("failed to load aws config: %v", err)
@@ -62,6 +56,7 @@ func StartMinio(t *testing.T, ctx context.Context) storage.Config {
 
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		o.UsePathStyle = true
+		o.BaseEndpoint = aws.String(serviceURL)
 	})
 
 	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{

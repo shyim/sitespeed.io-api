@@ -11,7 +11,7 @@ A Go REST API that wraps [sitespeed.io](https://www.sitespeed.io/) to run web pe
 - Screenshot capture
 - Automatic cleanup of stale containers/pods and result files
 - Optional bearer token authentication
-- Sentry error tracking
+- Optional OpenTelemetry tracing with trace-aware request logging
 
 ## API Endpoints
 
@@ -56,7 +56,11 @@ Response:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AUTH_TOKEN` | Bearer token for `/api/*` endpoints | _(none, auth disabled)_ |
-| `SENTRY_DSN` | Sentry DSN for error tracking | _(none, disabled)_ |
+| `OTEL_SERVICE_NAME` | OpenTelemetry service name | `sitespeed-api` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint used for traces | _(none, disabled)_ |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Trace-specific OTLP endpoint override | _(none, disabled)_ |
+
+When one of the OTLP endpoint variables is configured, incoming HTTP requests are traced and log lines emitted inside traced request flows include `trace_id` and `span_id` for correlation.
 
 ### Runner
 

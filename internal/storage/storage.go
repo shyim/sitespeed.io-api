@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -9,6 +10,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/shyim/sitespeed-api/internal/observability"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type Config struct {
@@ -52,15 +56,6 @@ func NewServiceWithConfig(ctx context.Context, cfg Config) (*Service, error) {
 			}, nil
 		})),
 		config.WithRegion("us-east-1"),
-		config.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-			if cfg.ServiceURL != "" {
-				return aws.Endpoint{
-					URL:           cfg.ServiceURL,
-					SigningRegion: "us-east-1",
-				}, nil
-			}
-			return aws.Endpoint{}, &aws.EndpointNotFoundError{}
-		})),
 	)
 	if err != nil {
 		return nil, err
@@ -68,6 +63,9 @@ func NewServiceWithConfig(ctx context.Context, cfg Config) (*Service, error) {
 
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		o.UsePathStyle = true
+		if cfg.ServiceURL != "" {
+			o.BaseEndpoint = aws.String(cfg.ServiceURL)
+		}
 	})
 
 	return &Service{
@@ -78,58 +76,119 @@ func NewServiceWithConfig(ctx context.Context, cfg Config) (*Service, error) {
 }
 
 func (s *Service) UploadFile(ctx context.Context, key, filePath string) error {
+	ctx, span := observability.Tracer("storage").Start(ctx, "storage.UploadFile")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("storage.bucket", s.bucketName),
+		attribute.String("storage.key", key),
+		attribute.String("file.path", filePath),
+	)
+
 	file, err := os.Open(filePath)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to open upload file")
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	return s.UploadStream(ctx, key, file)
 }
 
 func (s *Service) UploadStream(ctx context.Context, key string, stream io.Reader) error {
+	ctx, span := observability.Tracer("storage").Start(ctx, "storage.UploadStream")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("storage.bucket", s.bucketName),
+		attribute.String("storage.key", key),
+	)
+
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.bucketName),
 		Key:    aws.String(key),
 		Body:   stream,
 	})
-	return err
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to upload object")
+		return fmt.Errorf("upload %s: %w", key, err)
+	}
+
+	return nil
 }
 
 func (s *Service) DownloadFile(ctx context.Context, key, destinationPath string) error {
+	ctx, span := observability.Tracer("storage").Start(ctx, "storage.DownloadFile")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("storage.bucket", s.bucketName),
+		attribute.String("storage.key", key),
+		attribute.String("file.path", destinationPath),
+	)
+
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucketName),
 		Key:    aws.String(key),
 	})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to download object")
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	file, err := os.Create(destinationPath)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to create destination file")
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	_, err = io.Copy(file, resp.Body)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to write downloaded object")
+	}
+
 	return err
 }
 
 func (s *Service) DeleteFile(ctx context.Context, key string) error {
+	ctx, span := observability.Tracer("storage").Start(ctx, "storage.DeleteFile")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("storage.bucket", s.bucketName),
+		attribute.String("storage.key", key),
+	)
+
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucketName),
 		Key:    aws.String(key),
 	})
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to delete object")
+	}
+
 	return err
 }
 
 func (s *Service) GetFile(ctx context.Context, key string) (io.ReadCloser, *string, *time.Time, *string, error) {
+	ctx, span := observability.Tracer("storage").Start(ctx, "storage.GetFile")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("storage.bucket", s.bucketName),
+		attribute.String("storage.key", key),
+	)
+
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucketName),
 		Key:    aws.String(key),
 	})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to get object")
 		return nil, nil, nil, nil, err
 	}
 

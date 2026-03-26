@@ -2,35 +2,37 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
-	"github.com/getsentry/sentry-go"
 	"github.com/shyim/sitespeed-api/internal/cleanup"
 	"github.com/shyim/sitespeed-api/internal/docker"
 	"github.com/shyim/sitespeed-api/internal/handler"
+	"github.com/shyim/sitespeed-api/internal/observability"
 	"github.com/shyim/sitespeed-api/internal/runner"
 	"github.com/shyim/sitespeed-api/internal/storage"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func main() {
 	ctx := context.Background()
 
-	// Initialize Sentry if DSN is configured
-	if dsn := os.Getenv("SENTRY_DSN"); dsn != "" {
-		err := sentry.Init(sentry.ClientOptions{
-			Dsn:              dsn,
-			EnableTracing:    true,
-			TracesSampleRate: 1.0,
-		})
-		if err != nil {
-			log.Fatalf("Failed to initialize Sentry: %v", err)
-		}
-		defer sentry.Flush(2 * time.Second)
-		log.Println("Sentry initialized")
+	shutdownObservability, err := observability.Setup(ctx)
+	if err != nil {
+		log.Fatalf("Failed to initialize OpenTelemetry: %v", err)
 	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownObservability(shutdownCtx); err != nil {
+			log.Printf("Failed to shutdown OpenTelemetry: %v", err)
+		}
+	}()
 
 	storageService, err := storage.NewService(ctx)
 	if err != nil {
@@ -41,7 +43,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize runner: %v", err)
 	}
-	defer r.Close()
+	defer func() {
+		_ = r.Close()
+	}()
 
 	h := handler.NewHandler(storageService, r)
 
@@ -59,6 +63,15 @@ func main() {
 	finalHandler := h.AuthMiddleware(mux)
 	finalHandler = recoverMiddleware(finalHandler)
 	finalHandler = loggingMiddleware(finalHandler)
+	finalHandler = otelhttp.NewHandler(finalHandler, "http.server",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			pattern := r.Pattern
+			if pattern == "" {
+				pattern = r.URL.Path
+			}
+			return fmt.Sprintf("%s %s", r.Method, pattern)
+		}),
+	)
 
 	log.Println("Server starting on port 8080")
 	if err := http.ListenAndServe(":8080", finalHandler); err != nil {
@@ -71,10 +84,10 @@ func createRunner(ctx context.Context) (runner.Runner, error) {
 
 	switch runnerType {
 	case "kubernetes":
-		log.Println("Using Kubernetes runner")
+		observability.Printf(ctx, "Using Kubernetes runner")
 		return createKubernetesRunner(ctx)
 	default:
-		log.Println("Using Docker runner")
+		observability.Printf(ctx, "Using Docker runner")
 		return createDockerRunner(ctx)
 	}
 }
@@ -86,7 +99,7 @@ func createDockerRunner(ctx context.Context) (runner.Runner, error) {
 	}
 
 	if err := r.EnsureImage(ctx); err != nil {
-		r.Close()
+		_ = r.Close()
 		return nil, err
 	}
 
@@ -96,9 +109,10 @@ func createDockerRunner(ctx context.Context) (runner.Runner, error) {
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		log.Printf("Started %s %s", r.Method, r.URL.Path)
-		next.ServeHTTP(w, r)
-		log.Printf("Completed %s %s in %v", r.Method, r.URL.Path, time.Since(start))
+		recorder := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+		observability.Printf(r.Context(), "Started %s %s", r.Method, r.URL.Path)
+		next.ServeHTTP(recorder, r)
+		observability.Printf(r.Context(), "Completed %s %s status=%d duration=%v", r.Method, r.URL.Path, recorder.statusCode, time.Since(start))
 	})
 }
 
@@ -106,15 +120,25 @@ func recoverMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				log.Printf("Panic: %v", err)
-				if hub := sentry.GetHubFromContext(r.Context()); hub != nil {
-					hub.RecoverWithContext(r.Context(), err)
-				} else {
-					sentry.CurrentHub().RecoverWithContext(r.Context(), err)
+				observability.Errorf(r.Context(), "panic: %v", err)
+				span := trace.SpanFromContext(r.Context())
+				if span.SpanContext().IsValid() {
+					span.RecordError(fmt.Errorf("panic: %v", err))
+					span.SetStatus(codes.Error, "panic")
 				}
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (r *statusRecorder) WriteHeader(statusCode int) {
+	r.statusCode = statusCode
+	r.ResponseWriter.WriteHeader(statusCode)
 }

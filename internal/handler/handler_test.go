@@ -15,6 +15,8 @@ import (
 	"github.com/shyim/sitespeed-api/internal/models"
 	"github.com/shyim/sitespeed-api/internal/storage"
 	"github.com/shyim/sitespeed-api/internal/testhelper"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mockRunner implements runner.Runner for testing.
@@ -40,20 +42,14 @@ func createFakeSitespeedResult(t *testing.T, dir string) {
 	// Create pages directory with a domain subdirectory
 	pagesDir := filepath.Join(dir, "pages", "example_com")
 	screenshotDir := filepath.Join(pagesDir, "data", "screenshots", "1")
-	if err := os.MkdirAll(screenshotDir, 0755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(screenshotDir, 0755))
 
 	// Create a fake screenshot
-	if err := os.WriteFile(filepath.Join(screenshotDir, "afterPageCompleteCheck.png"), []byte("fake-png-data"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(screenshotDir, "afterPageCompleteCheck.png"), []byte("fake-png-data"), 0644))
 
 	// Create data directory with browsertime and pagexray summaries
 	dataDir := filepath.Join(dir, "data")
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(dataDir, 0755))
 
 	browsertime := models.BrowserTime{
 		GoogleWebVitals: &models.GoogleWebVitals{
@@ -67,22 +63,16 @@ func createFakeSitespeedResult(t *testing.T, dir string) {
 		},
 	}
 	btData, _ := json.Marshal(browsertime)
-	if err := os.WriteFile(filepath.Join(dataDir, "browsertime.summary-total.json"), btData, 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "browsertime.summary-total.json"), btData, 0644))
 
 	pagexray := models.PageXray{
 		TransferSize: &models.Metric{Median: 524288},
 	}
 	pxData, _ := json.Marshal(pagexray)
-	if err := os.WriteFile(filepath.Join(dataDir, "pagexray.summary-total.json"), pxData, 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "pagexray.summary-total.json"), pxData, 0644))
 
 	// Create a simple index.html for result browsing
-	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html><body>Results</body></html>"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html><body>Results</body></html>"), 0644))
 }
 
 func setupTestServer(t *testing.T, runner *mockRunner) (*httptest.Server, *storage.Service) {
@@ -90,9 +80,7 @@ func setupTestServer(t *testing.T, runner *mockRunner) (*httptest.Server, *stora
 	ctx := context.Background()
 	cfg := testhelper.StartMinio(t, ctx)
 	svc, err := storage.NewServiceWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatalf("failed to create storage service: %v", err)
-	}
+	require.NoError(t, err)
 
 	h := handler.NewHandler(svc, runner)
 	mux := http.NewServeMux()
@@ -119,38 +107,20 @@ func TestHandleAnalyze(t *testing.T) {
 
 	body := `{"urls": ["https://example.com"]}`
 	resp, err := http.Post(srv.URL+"/api/result/test-123", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var result models.AnalyzeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
 
-	if result.Ttfb != 123.45 {
-		t.Errorf("expected TTFB 123.45, got %f", result.Ttfb)
-	}
-	if result.FullyLoaded != 2567.89 {
-		t.Errorf("expected FullyLoaded 2567.89, got %f", result.FullyLoaded)
-	}
-	if result.LargestContentfulPaint != 1200.5 {
-		t.Errorf("expected LCP 1200.5, got %f", result.LargestContentfulPaint)
-	}
-	if result.FirstContentfulPaint != 800.3 {
-		t.Errorf("expected FCP 800.3, got %f", result.FirstContentfulPaint)
-	}
-	if result.CumulativeLayoutShift != 0.05 {
-		t.Errorf("expected CLS 0.05, got %f", result.CumulativeLayoutShift)
-	}
-	if result.TransferSize != 524288 {
-		t.Errorf("expected TransferSize 524288, got %f", result.TransferSize)
-	}
+	assert.Equal(t, 123.45, result.Ttfb)
+	assert.Equal(t, 2567.89, result.FullyLoaded)
+	assert.Equal(t, 1200.5, result.LargestContentfulPaint)
+	assert.Equal(t, 800.3, result.FirstContentfulPaint)
+	assert.Equal(t, 0.05, result.CumulativeLayoutShift)
+	assert.Equal(t, 524288.0, result.TransferSize)
 }
 
 func TestHandleAnalyzeInvalidID(t *testing.T) {
@@ -170,13 +140,9 @@ func TestHandleAnalyzeInvalidID(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			body := `{"urls": ["https://example.com"]}`
 			resp, err := http.Post(srv.URL+"/api/result/"+tc.id, "application/json", strings.NewReader(body))
-			if err != nil {
-				t.Fatal(err)
-			}
-			resp.Body.Close()
-			if resp.StatusCode != tc.wantStatus {
-				t.Errorf("expected %d, got %d", tc.wantStatus, resp.StatusCode)
-			}
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			assert.Equal(t, tc.wantStatus, resp.StatusCode)
 		})
 	}
 }
@@ -198,13 +164,9 @@ func TestHandleAnalyzeInvalidBody(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			resp, err := http.Post(srv.URL+"/api/result/valid-id", "application/json", strings.NewReader(tc.body))
-			if err != nil {
-				t.Fatal(err)
-			}
-			resp.Body.Close()
-			if resp.StatusCode != tc.wantStatus {
-				t.Errorf("expected %d, got %d", tc.wantStatus, resp.StatusCode)
-			}
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			assert.Equal(t, tc.wantStatus, resp.StatusCode)
 		})
 	}
 }
@@ -220,14 +182,10 @@ func TestHandleAnalyzeRunnerError(t *testing.T) {
 
 	body := `{"urls": ["https://example.com"]}`
 	resp, err := http.Post(srv.URL+"/api/result/test-err", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
 
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 }
 
 func TestHandleGetResultAndDelete(t *testing.T) {
@@ -244,50 +202,32 @@ func TestHandleGetResultAndDelete(t *testing.T) {
 	// First, analyze to upload results
 	body := `{"urls": ["https://example.com"]}`
 	resp, err := http.Post(srv.URL+"/api/result/browse-test", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("analyze failed: %d", resp.StatusCode)
-	}
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	// Browse the result (index.html)
 	resp, err = http.Get(srv.URL + "/result/browse-test/index.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 for result browse, got %d", resp.StatusCode)
-	}
-	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/html") {
-		t.Errorf("expected text/html content type, got %s", ct)
-	}
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "text/html")
 
 	// Delete the result
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/result/browse-test", nil)
 	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 for delete, got %d", resp.StatusCode)
-	}
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestHandleGetResultNotFound(t *testing.T) {
 	srv, _ := setupTestServer(t, &mockRunner{})
 
 	resp, err := http.Get(srv.URL + "/result/nonexistent/index.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", resp.StatusCode)
-	}
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
 func TestHandleGetScreenshot(t *testing.T) {
@@ -304,36 +244,24 @@ func TestHandleGetScreenshot(t *testing.T) {
 	// Analyze first to upload screenshot
 	body := `{"urls": ["https://example.com"]}`
 	resp, err := http.Post(srv.URL+"/api/result/screenshot-test", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
 
 	// Get the screenshot
 	resp, err = http.Get(srv.URL + "/screenshot/screenshot-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-	if ct := resp.Header.Get("Content-Type"); ct != "image/png" {
-		t.Errorf("expected image/png, got %s", ct)
-	}
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "image/png", resp.Header.Get("Content-Type"))
 }
 
 func TestHandleGetScreenshotNotFound(t *testing.T) {
 	srv, _ := setupTestServer(t, &mockRunner{})
 
 	resp, err := http.Get(srv.URL + "/screenshot/nonexistent")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", resp.StatusCode)
-	}
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
 func TestAuthMiddleware(t *testing.T) {
@@ -344,48 +272,32 @@ func TestAuthMiddleware(t *testing.T) {
 	// No token - should fail
 	body := `{"urls": ["https://example.com"]}`
 	resp, err := http.Post(srv.URL+"/api/result/auth-test", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401 without token, got %d", resp.StatusCode)
-	}
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 
 	// Wrong token
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/result/auth-test", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer wrong-token")
 	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401 with wrong token, got %d", resp.StatusCode)
-	}
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 
 	// Correct token
 	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/api/result/auth-test", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer secret-token")
 	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
 	// Should not be 401 (could be 400/500 depending on runner, but not 401)
-	if resp.StatusCode == http.StatusUnauthorized {
-		t.Fatal("expected auth to pass with correct token")
-	}
+	assert.NotEqual(t, http.StatusUnauthorized, resp.StatusCode)
 
 	// Non-API path should not require auth
 	resp, err = http.Get(srv.URL + "/result/something/index.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized {
-		t.Fatal("non-API path should not require auth")
-	}
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.NotEqual(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
 func TestHandleAnalyzeWithHeaders(t *testing.T) {
@@ -403,22 +315,11 @@ func TestHandleAnalyzeWithHeaders(t *testing.T) {
 
 	body := `{"urls": ["https://example.com"], "headers": {"Authorization": "Bearer test", "X-Custom": "value"}}`
 	resp, err := http.Post(srv.URL+"/api/result/headers-test", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-
-	if len(capturedReq.Headers) != 2 {
-		t.Fatalf("expected 2 headers, got %d", len(capturedReq.Headers))
-	}
-	if capturedReq.Headers["Authorization"] != "Bearer test" {
-		t.Errorf("expected Authorization header, got %q", capturedReq.Headers["Authorization"])
-	}
-	if capturedReq.Headers["X-Custom"] != "value" {
-		t.Errorf("expected X-Custom header, got %q", capturedReq.Headers["X-Custom"])
-	}
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Len(t, capturedReq.Headers, 2)
+	assert.Equal(t, "Bearer test", capturedReq.Headers["Authorization"])
+	assert.Equal(t, "value", capturedReq.Headers["X-Custom"])
 }

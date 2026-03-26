@@ -12,12 +12,12 @@ func ZipDirectory(source, target string) error {
 	if err != nil {
 		return err
 	}
-	defer zipfile.Close()
+	defer func() { _ = zipfile.Close() }()
 
 	archive := zip.NewWriter(zipfile)
-	defer archive.Close()
+	defer func() { _ = archive.Close() }()
 
-	filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -61,7 +61,7 @@ func ZipDirectory(source, target string) error {
 		if err != nil {
 			return err
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		_, err = io.Copy(writer, file)
 		return err
 	})
