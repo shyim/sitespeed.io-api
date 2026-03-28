@@ -84,6 +84,7 @@ func setupTestServer(t *testing.T, runner *mockRunner) (*httptest.Server, *stora
 
 	h := handler.NewHandler(svc, runner)
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", h.HandleHealth)
 	mux.HandleFunc("POST /api/result/{id}", h.HandleAnalyze)
 	mux.HandleFunc("DELETE /api/result/{id}", h.HandleDeleteResult)
 	mux.HandleFunc("GET /result/{id}/{path...}", h.HandleGetResult)
@@ -92,6 +93,21 @@ func setupTestServer(t *testing.T, runner *mockRunner) (*httptest.Server, *stora
 	srv := httptest.NewServer(h.AuthMiddleware(mux))
 	t.Cleanup(srv.Close)
 	return srv, svc
+}
+
+func TestHandleHealth(t *testing.T) {
+	srv, _ := setupTestServer(t, &mockRunner{})
+
+	resp, err := http.Get(srv.URL + "/healthz")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+
+	var result map[string]string
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+	assert.Equal(t, "ok", result["status"])
 }
 
 func TestHandleAnalyze(t *testing.T) {

@@ -46,6 +46,12 @@ func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func (h *Handler) HandleHealth(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
 func (h *Handler) HandleAnalyze(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	ctx, span := observability.Tracer("handler").Start(r.Context(), "handler.HandleAnalyze")
