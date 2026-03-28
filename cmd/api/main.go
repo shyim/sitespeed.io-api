@@ -54,6 +54,7 @@ func main() {
 
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("GET /healthz", h.HandleHealth)
 	mux.HandleFunc("POST /api/result/{id}", h.HandleAnalyze)
 	mux.HandleFunc("DELETE /api/result/{id}", h.HandleDeleteResult)
 	mux.HandleFunc("GET /result/{id}/{path...}", h.HandleGetResult)

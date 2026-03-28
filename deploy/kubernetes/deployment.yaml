@@ -19,6 +19,18 @@ spec:
           image: ghcr.io/shyim/sitespeed-api:latest
           ports:
             - containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
           env:
             - name: RUNNER_TYPE
               value: kubernetes

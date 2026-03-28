@@ -17,10 +17,21 @@ A Go REST API that wraps [sitespeed.io](https://www.sitespeed.io/) to run web pe
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| `GET` | `/healthz` | Basic health check for container/orchestrator probes |
 | `POST` | `/api/result/{id}` | Run a sitespeed.io analysis |
 | `DELETE` | `/api/result/{id}` | Delete stored results |
 | `GET` | `/result/{id}/{path...}` | Browse the full HTML report |
 | `GET` | `/screenshot/{id}` | Get the page screenshot |
+
+### GET `/healthz`
+
+Returns `200 OK` when the API process is up.
+
+```json
+{
+  "status": "ok"
+}
+```
 
 ### POST `/api/result/{id}`
 
