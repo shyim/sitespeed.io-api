@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -24,24 +24,27 @@ func main() {
 
 	shutdownObservability, err := observability.Setup(ctx)
 	if err != nil {
-		log.Fatalf("Failed to initialize OpenTelemetry: %v", err)
+		slog.Error("Failed to initialize OpenTelemetry", "error", err)
+		os.Exit(1)
 	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := shutdownObservability(shutdownCtx); err != nil {
-			log.Printf("Failed to shutdown OpenTelemetry: %v", err)
+			slog.Error("Failed to shutdown OpenTelemetry", "error", err)
 		}
 	}()
 
 	storageService, err := storage.NewService(ctx)
 	if err != nil {
-		log.Fatalf("Failed to initialize storage service: %v", err)
+		slog.Error("Failed to initialize storage service", "error", err)
+		os.Exit(1)
 	}
 
 	r, err := createRunner(ctx)
 	if err != nil {
-		log.Fatalf("Failed to initialize runner: %v", err)
+		slog.Error("Failed to initialize runner", "error", err)
+		os.Exit(1)
 	}
 	defer func() {
 		_ = r.Close()
@@ -74,9 +77,10 @@ func main() {
 		}),
 	)
 
-	log.Println("Server starting on port 8080")
+	slog.Info("Server starting", "port", 8080)
 	if err := http.ListenAndServe(":8080", finalHandler); err != nil {
-		log.Fatalf("Server failed: %v", err)
+		slog.Error("Server failed", "error", err)
+		os.Exit(1)
 	}
 }
 
@@ -111,9 +115,9 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
-		observability.Printf(r.Context(), "Started %s %s", r.Method, r.URL.Path)
+		slog.InfoContext(r.Context(), "Request started", "method", r.Method, "path", r.URL.Path)
 		next.ServeHTTP(recorder, r)
-		observability.Printf(r.Context(), "Completed %s %s status=%d duration=%v", r.Method, r.URL.Path, recorder.statusCode, time.Since(start))
+		slog.InfoContext(r.Context(), "Request completed", "method", r.Method, "path", r.URL.Path, "status", recorder.statusCode, "duration", time.Since(start))
 	})
 }
 

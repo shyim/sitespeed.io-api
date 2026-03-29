@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -21,15 +22,11 @@ type Config struct {
 }
 
 func ConfigFromEnv() Config {
-	bucketName := os.Getenv("S3_BUCKET_NAME")
-	if bucketName == "" {
-		bucketName = "sitespeed-results"
-	}
 	return Config{
 		ServiceURL:            os.Getenv("S3_SERVICE_URL"),
 		AccessKey:             os.Getenv("S3_ACCESS_KEY"),
 		SecretKey:             os.Getenv("S3_SECRET_KEY"),
-		BucketName:            bucketName,
+		BucketName:            cmp.Or(os.Getenv("S3_BUCKET_NAME"), "sitespeed-results"),
 		DisablePayloadSigning: os.Getenv("S3_DISABLE_PAYLOAD_SIGNING") != "false",
 	}
 }

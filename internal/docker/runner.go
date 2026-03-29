@@ -2,7 +2,9 @@ package docker
 
 import (
 	"archive/tar"
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -52,15 +54,8 @@ func NewRunner() (*Runner, error) {
 		return nil, fmt.Errorf("failed to ping docker daemon: %w", err)
 	}
 
-	img := os.Getenv("SITESPEED_IMAGE")
-	if img == "" {
-		img = "sitespeedio/sitespeed.io:latest"
-	}
-
-	baseDir := os.Getenv("RESULT_BASE_DIR")
-	if baseDir == "" {
-		baseDir = "/tmp/sitespeed-results"
-	}
+	img := cmp.Or(os.Getenv("SITESPEED_IMAGE"), "sitespeedio/sitespeed.io:latest")
+	baseDir := cmp.Or(os.Getenv("RESULT_BASE_DIR"), "/tmp/sitespeed-results")
 
 	timeout := 300 * time.Second
 	if v := os.Getenv("DOCKER_TIMEOUT"); v != "" {
@@ -254,7 +249,7 @@ func (r *Runner) copyFromContainer(ctx context.Context, containerID, srcPath, de
 	tr := tar.NewReader(reader)
 	for {
 		header, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

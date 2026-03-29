@@ -3,8 +3,10 @@ package handler
 import (
 	"archive/zip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"net/http"
 	"net/url"
@@ -237,7 +239,7 @@ func (h *Handler) HandleGetResult(w http.ResponseWriter, r *http.Request) {
 	tempPath := os.TempDir()
 	zipPath := filepath.Join(tempPath, "sitespeed-cache", fmt.Sprintf("%s.zip", id))
 
-	if _, err := os.Stat(zipPath); os.IsNotExist(err) {
+	if _, err := os.Stat(zipPath); errors.Is(err, fs.ErrNotExist) {
 		if err := os.MkdirAll(filepath.Dir(zipPath), 0755); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "failed to create cache dir")
