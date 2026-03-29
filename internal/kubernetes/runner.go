@@ -3,7 +3,9 @@ package kubernetes
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,7 +15,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
@@ -62,10 +64,7 @@ func NewRunner() (*Runner, error) {
 		return nil, fmt.Errorf("failed to create kubernetes clientset: %w", err)
 	}
 
-	img := os.Getenv("SITESPEED_IMAGE")
-	if img == "" {
-		img = "sitespeedio/sitespeed.io:latest"
-	}
+	img := cmp.Or(os.Getenv("SITESPEED_IMAGE"), "sitespeedio/sitespeed.io:latest")
 
 	namespace := os.Getenv("K8S_NAMESPACE")
 	if namespace == "" {
@@ -77,10 +76,7 @@ func NewRunner() (*Runner, error) {
 		}
 	}
 
-	baseDir := os.Getenv("RESULT_BASE_DIR")
-	if baseDir == "" {
-		baseDir = "/tmp/sitespeed-results"
-	}
+	baseDir := cmp.Or(os.Getenv("RESULT_BASE_DIR"), "/tmp/sitespeed-results")
 
 	timeout := 300 * time.Second
 	if v := os.Getenv("DOCKER_TIMEOUT"); v != "" {
@@ -198,7 +194,7 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 	podsClient := r.clientset.CoreV1().Pods(r.namespace)
 
 	// Clean up any existing pod with same name
-	if err := podsClient.Delete(ctx, podName, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+	if err := podsClient.Delete(ctx, podName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 		observability.Errorf(ctx, "Failed to delete existing pod %s: %v", podName, err)
 	}
 
@@ -327,7 +323,7 @@ func extractTar(reader io.Reader, destDir string) error {
 	tr := tar.NewReader(reader)
 	for {
 		header, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

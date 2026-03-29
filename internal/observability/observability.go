@@ -1,9 +1,10 @@
 package observability
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 
 	"go.opentelemetry.io/otel"
@@ -18,6 +19,8 @@ import (
 const serviceName = "sitespeed-api"
 
 func Setup(ctx context.Context) (func(context.Context) error, error) {
+	slog.SetDefault(slog.New(newTraceHandler(slog.NewTextHandler(os.Stderr, nil))))
+
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
@@ -29,7 +32,7 @@ func Setup(ctx context.Context) (func(context.Context) error, error) {
 		resource.WithProcess(),
 		resource.WithHost(),
 		resource.WithAttributes(
-			semconv.ServiceName(defaultString(os.Getenv("OTEL_SERVICE_NAME"), serviceName)),
+			semconv.ServiceName(cmp.Or(os.Getenv("OTEL_SERVICE_NAME"), serviceName)),
 		),
 	)
 	if err != nil {
@@ -51,7 +54,7 @@ func Setup(ctx context.Context) (func(context.Context) error, error) {
 	)
 	otel.SetTracerProvider(provider)
 
-	log.Printf("OpenTelemetry tracing enabled for service %s", defaultString(os.Getenv("OTEL_SERVICE_NAME"), serviceName))
+	slog.Info("OpenTelemetry tracing enabled", "service", cmp.Or(os.Getenv("OTEL_SERVICE_NAME"), serviceName))
 
 	return provider.Shutdown, nil
 }
@@ -61,26 +64,39 @@ func Tracer(name string) trace.Tracer {
 }
 
 func Printf(ctx context.Context, format string, args ...any) {
-	msg := fmt.Sprintf(format, args...)
-	log.Print(withTracePrefix(ctx, msg))
+	slog.InfoContext(ctx, fmt.Sprintf(format, args...))
 }
 
 func Errorf(ctx context.Context, format string, args ...any) {
-	msg := fmt.Sprintf(format, args...)
-	log.Print(withTracePrefix(ctx, "ERROR: "+msg))
+	slog.ErrorContext(ctx, fmt.Sprintf(format, args...))
 }
 
-func withTracePrefix(ctx context.Context, msg string) string {
-	spanContext := trace.SpanContextFromContext(ctx)
-	if !spanContext.IsValid() {
-		return msg
-	}
+// traceHandler is a slog.Handler that enriches log records with OpenTelemetry trace context.
+type traceHandler struct {
+	slog.Handler
+}
 
-	return fmt.Sprintf("trace_id=%s span_id=%s %s",
-		spanContext.TraceID().String(),
-		spanContext.SpanID().String(),
-		msg,
-	)
+func newTraceHandler(h slog.Handler) *traceHandler {
+	return &traceHandler{Handler: h}
+}
+
+func (h *traceHandler) Handle(ctx context.Context, r slog.Record) error {
+	spanCtx := trace.SpanContextFromContext(ctx)
+	if spanCtx.IsValid() {
+		r.AddAttrs(
+			slog.String("trace_id", spanCtx.TraceID().String()),
+			slog.String("span_id", spanCtx.SpanID().String()),
+		)
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+func (h *traceHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return newTraceHandler(h.Handler.WithAttrs(attrs))
+}
+
+func (h *traceHandler) WithGroup(name string) slog.Handler {
+	return newTraceHandler(h.Handler.WithGroup(name))
 }
 
 func tracingConfigured() bool {
@@ -94,12 +110,4 @@ func tracingConfigured() bool {
 	}
 
 	return false
-}
-
-func defaultString(v, fallback string) string {
-	if v == "" {
-		return fallback
-	}
-
-	return v
 }
