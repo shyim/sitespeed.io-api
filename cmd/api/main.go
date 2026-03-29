@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/shyim/sitespeed-api/internal/cleanup"
@@ -24,24 +26,27 @@ func main() {
 
 	shutdownObservability, err := observability.Setup(ctx)
 	if err != nil {
-		log.Fatalf("Failed to initialize OpenTelemetry: %v", err)
+		slog.Error("Failed to initialize OpenTelemetry", "error", err)
+		os.Exit(1)
 	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := shutdownObservability(shutdownCtx); err != nil {
-			log.Printf("Failed to shutdown OpenTelemetry: %v", err)
+			slog.Error("Failed to shutdown OpenTelemetry", "error", err)
 		}
 	}()
 
 	storageService, err := storage.NewService(ctx)
 	if err != nil {
-		log.Fatalf("Failed to initialize storage service: %v", err)
+		slog.Error("Failed to initialize storage service", "error", err)
+		os.Exit(1)
 	}
 
 	r, err := createRunner(ctx)
 	if err != nil {
-		log.Fatalf("Failed to initialize runner: %v", err)
+		slog.Error("Failed to initialize runner", "error", err)
+		os.Exit(1)
 	}
 	defer func() {
 		_ = r.Close()
@@ -74,10 +79,33 @@ func main() {
 		}),
 	)
 
-	log.Println("Server starting on port 8080")
-	if err := http.ListenAndServe(":8080", finalHandler); err != nil {
-		log.Fatalf("Server failed: %v", err)
+	server := &http.Server{
+		Addr:    ":8080",
+		Handler: finalHandler,
 	}
+
+	// Graceful shutdown on SIGINT/SIGTERM
+	shutdownCh := make(chan os.Signal, 1)
+	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		slog.Info("Server starting", "addr", server.Addr)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("Server failed", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	sig := <-shutdownCh
+	slog.Info("Shutdown signal received", "signal", sig.String())
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		slog.Error("Server shutdown failed", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("Server stopped gracefully")
 }
 
 func createRunner(ctx context.Context) (runner.Runner, error) {

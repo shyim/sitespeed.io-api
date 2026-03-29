@@ -3,8 +3,10 @@ package handler
 import (
 	"archive/zip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"net/http"
 	"net/url"
@@ -96,7 +98,7 @@ func (h *Handler) HandleAnalyze(w http.ResponseWriter, r *http.Request) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "sitespeed analysis failed")
 		observability.Errorf(ctx, "Sitespeed failed: %v", err)
-		renderError(w, "Failed to run sitespeed analysis", awsString(err.Error()), http.StatusInternalServerError)
+		renderError(w, "Failed to run sitespeed analysis", ptr(err.Error()), http.StatusInternalServerError)
 		return
 	}
 	defer removeAllQuietly(resultDir)
@@ -175,7 +177,7 @@ func (h *Handler) HandleAnalyze(w http.ResponseWriter, r *http.Request) {
 	if err := utils.ZipDirectory(resultDir, zipPath); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "failed to create result zip")
-		renderError(w, "Failed to create zip", awsString(err.Error()), http.StatusInternalServerError)
+		renderError(w, "Failed to create zip", ptr(err.Error()), http.StatusInternalServerError)
 		return
 	}
 	defer removeQuietly(zipPath)
@@ -183,7 +185,7 @@ func (h *Handler) HandleAnalyze(w http.ResponseWriter, r *http.Request) {
 	if err := h.storage.UploadFile(ctx, fmt.Sprintf("results/%s/result.zip", id), zipPath); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "failed to upload result zip")
-		renderError(w, "Failed to upload zip", awsString(err.Error()), http.StatusInternalServerError)
+		renderError(w, "Failed to upload zip", ptr(err.Error()), http.StatusInternalServerError)
 		return
 	}
 
@@ -237,7 +239,7 @@ func (h *Handler) HandleGetResult(w http.ResponseWriter, r *http.Request) {
 	tempPath := os.TempDir()
 	zipPath := filepath.Join(tempPath, "sitespeed-cache", fmt.Sprintf("%s.zip", id))
 
-	if _, err := os.Stat(zipPath); os.IsNotExist(err) {
+	if _, err := os.Stat(zipPath); errors.Is(err, fs.ErrNotExist) {
 		if err := os.MkdirAll(filepath.Dir(zipPath), 0755); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "failed to create cache dir")
@@ -388,7 +390,7 @@ func renderError(w http.ResponseWriter, msg string, details *string, status int)
 	})
 }
 
-func awsString(v string) *string {
+func ptr[T any](v T) *T {
 	return &v
 }
 

@@ -1,9 +1,10 @@
 package observability
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 
 	"go.opentelemetry.io/otel"
@@ -29,7 +30,7 @@ func Setup(ctx context.Context) (func(context.Context) error, error) {
 		resource.WithProcess(),
 		resource.WithHost(),
 		resource.WithAttributes(
-			semconv.ServiceName(defaultString(os.Getenv("OTEL_SERVICE_NAME"), serviceName)),
+			semconv.ServiceName(cmp.Or(os.Getenv("OTEL_SERVICE_NAME"), serviceName)),
 		),
 	)
 	if err != nil {
@@ -51,7 +52,7 @@ func Setup(ctx context.Context) (func(context.Context) error, error) {
 	)
 	otel.SetTracerProvider(provider)
 
-	log.Printf("OpenTelemetry tracing enabled for service %s", defaultString(os.Getenv("OTEL_SERVICE_NAME"), serviceName))
+	slog.Info("OpenTelemetry tracing enabled", "service", cmp.Or(os.Getenv("OTEL_SERVICE_NAME"), serviceName))
 
 	return provider.Shutdown, nil
 }
@@ -62,25 +63,23 @@ func Tracer(name string) trace.Tracer {
 
 func Printf(ctx context.Context, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	log.Print(withTracePrefix(ctx, msg))
+	slog.InfoContext(ctx, msg, traceAttrs(ctx)...)
 }
 
 func Errorf(ctx context.Context, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	log.Print(withTracePrefix(ctx, "ERROR: "+msg))
+	slog.ErrorContext(ctx, msg, traceAttrs(ctx)...)
 }
 
-func withTracePrefix(ctx context.Context, msg string) string {
+func traceAttrs(ctx context.Context) []any {
 	spanContext := trace.SpanContextFromContext(ctx)
 	if !spanContext.IsValid() {
-		return msg
+		return nil
 	}
-
-	return fmt.Sprintf("trace_id=%s span_id=%s %s",
-		spanContext.TraceID().String(),
-		spanContext.SpanID().String(),
-		msg,
-	)
+	return []any{
+		"trace_id", spanContext.TraceID().String(),
+		"span_id", spanContext.SpanID().String(),
+	}
 }
 
 func tracingConfigured() bool {
@@ -94,12 +93,4 @@ func tracingConfigured() bool {
 	}
 
 	return false
-}
-
-func defaultString(v, fallback string) string {
-	if v == "" {
-		return fallback
-	}
-
-	return v
 }

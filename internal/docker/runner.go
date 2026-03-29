@@ -3,6 +3,7 @@ package docker
 import (
 	"archive/tar"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,9 +24,11 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
-const labelApp = "sitespeed-api"
-const labelID = "sitespeed-api-id"
-const containerOutputDir = "/sitespeed.io"
+const (
+	labelApp           = "sitespeed-api"
+	labelID            = "sitespeed-api-id"
+	containerOutputDir = "/sitespeed.io"
+)
 
 type Runner struct {
 	client        *client.Client
@@ -254,7 +257,7 @@ func (r *Runner) copyFromContainer(ctx context.Context, containerID, srcPath, de
 	tr := tar.NewReader(reader)
 	for {
 		header, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

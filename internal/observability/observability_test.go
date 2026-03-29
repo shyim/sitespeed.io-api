@@ -2,7 +2,6 @@ package observability
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,7 +9,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-func TestWithTracePrefix(t *testing.T) {
+func TestTraceAttrs(t *testing.T) {
 	provider := sdktrace.NewTracerProvider()
 	t.Cleanup(func() {
 		_ = provider.Shutdown(context.Background())
@@ -19,10 +18,17 @@ func TestWithTracePrefix(t *testing.T) {
 	ctx, span := provider.Tracer("test").Start(context.Background(), "span")
 	defer span.End()
 
-	msg := withTracePrefix(ctx, "hello world")
+	attrs := traceAttrs(ctx)
 	spanContext := trace.SpanContextFromContext(ctx)
 
-	assert.NotEqual(t, "hello world", msg)
-	assert.True(t, strings.Contains(msg, spanContext.TraceID().String()))
-	assert.True(t, strings.Contains(msg, spanContext.SpanID().String()))
+	assert.Len(t, attrs, 4)
+	assert.Equal(t, "trace_id", attrs[0])
+	assert.Equal(t, spanContext.TraceID().String(), attrs[1])
+	assert.Equal(t, "span_id", attrs[2])
+	assert.Equal(t, spanContext.SpanID().String(), attrs[3])
+}
+
+func TestTraceAttrsNoSpan(t *testing.T) {
+	attrs := traceAttrs(context.Background())
+	assert.Nil(t, attrs)
 }

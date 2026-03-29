@@ -4,7 +4,7 @@ import (
 	"archive/zip"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/shyim/sitespeed-api/internal/utils"
@@ -32,7 +32,7 @@ func TestZipDirectory(t *testing.T) {
 	for _, f := range reader.File {
 		names = append(names, f.Name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	expected := []string{"root.txt", "subdir/", "subdir/nested.txt"}
 	assert.Equal(t, expected, names)

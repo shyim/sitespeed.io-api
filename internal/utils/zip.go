@@ -3,6 +3,7 @@ package utils
 import (
 	"archive/zip"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -17,7 +18,12 @@ func ZipDirectory(source, target string) error {
 	archive := zip.NewWriter(zipfile)
 	defer func() { _ = archive.Close() }()
 
-	err = filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
+	err = filepath.WalkDir(source, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		info, err := d.Info()
 		if err != nil {
 			return err
 		}
@@ -37,7 +43,7 @@ func ZipDirectory(source, target string) error {
 		// Use forward slashes for zip spec
 		header.Name = filepath.ToSlash(relPath)
 
-		if info.IsDir() {
+		if d.IsDir() {
 			header.Name += "/"
 		} else {
 			header.Method = zip.Deflate
@@ -53,7 +59,7 @@ func ZipDirectory(source, target string) error {
 			return err
 		}
 
-		if info.IsDir() {
+		if d.IsDir() {
 			return nil
 		}
 

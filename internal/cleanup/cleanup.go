@@ -2,19 +2,19 @@ package cleanup
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/shyim/sitespeed-api/internal/runner"
 )
 
 func Start(r runner.Runner) {
-	log.Println("Container and result cleanup scheduled every 5 minutes")
+	slog.Info("Container and result cleanup scheduled every 5 minutes")
 
 	ctx := context.Background()
 	run := func() {
 		if err := r.CleanupOrphaned(ctx); err != nil {
-			log.Printf("Orphaned cleanup failed: %v", err)
+			slog.Error("Orphaned cleanup failed", "error", err)
 		}
 		r.CleanupStaleResultDirs(10)
 	}

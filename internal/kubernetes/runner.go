@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"os"
@@ -29,9 +30,11 @@ import (
 	"go.opentelemetry.io/otel/codes"
 )
 
-const labelApp = "sitespeed-api"
-const labelID = "sitespeed-api-id"
-const containerOutputDir = "/sitespeed.io"
+const (
+	labelApp           = "sitespeed-api"
+	labelID            = "sitespeed-api-id"
+	containerOutputDir = "/sitespeed.io"
+)
 
 type Runner struct {
 	clientset     *kubernetes.Clientset
@@ -327,7 +330,7 @@ func extractTar(reader io.Reader, destDir string) error {
 	tr := tar.NewReader(reader)
 	for {
 		header, err := tr.Next()
-		if err == io.EOF {
+		if stderrors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
