@@ -48,6 +48,8 @@ spec:
                 secretKeyRef:
                   name: sitespeed-api
                   key: s3-secret-key
+            - name: S3_SERVICE_URL
+              value: https://s3.example.com
             - name: S3_BUCKET_NAME
               value: sitespeed-results
             - name: AUTH_TOKEN

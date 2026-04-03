@@ -23,7 +23,7 @@ func TestRunAnalysisGoogle(t *testing.T) {
 	defer cancel()
 
 	t.Setenv("RESULT_BASE_DIR", t.TempDir())
-	t.Setenv("DOCKER_TIMEOUT", "300s")
+	t.Setenv("ANALYSIS_TIMEOUT", "300s")
 	t.Setenv("MAX_CONCURRENT_ANALYSES", "1")
 
 	runner, err := docker.NewRunner()
