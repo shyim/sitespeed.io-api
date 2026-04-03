@@ -192,6 +192,8 @@ func (h *Handler) HandleAnalyze(w http.ResponseWriter, r *http.Request) {
 	// Clean cache if exists
 	cacheZipPath := filepath.Join(tempPath, "sitespeed-cache", fmt.Sprintf("%s.zip", id))
 	removeQuietly(cacheZipPath)
+	cacheScreenshotPath := filepath.Join(tempPath, "sitespeed-cache", fmt.Sprintf("%s-screenshot.png", id))
+	removeQuietly(cacheScreenshotPath)
 
 	resp := models.AnalyzeResponse{}
 	if browsertimeData.GoogleWebVitals != nil {
@@ -341,6 +343,8 @@ func (h *Handler) HandleDeleteResult(w http.ResponseWriter, r *http.Request) {
 	tempPath := os.TempDir()
 	zipPath := filepath.Join(tempPath, "sitespeed-cache", fmt.Sprintf("%s.zip", id))
 	removeQuietly(zipPath)
+	screenshotCachePath := filepath.Join(tempPath, "sitespeed-cache", fmt.Sprintf("%s-screenshot.png", id))
+	removeQuietly(screenshotCachePath)
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -357,25 +361,46 @@ func (h *Handler) HandleGetScreenshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stream, _, lastModified, etag, err := h.storage.GetFile(ctx, fmt.Sprintf("results/%s/screenshot.png", id))
+	tempPath := os.TempDir()
+	cachePath := filepath.Join(tempPath, "sitespeed-cache", fmt.Sprintf("%s-screenshot.png", id))
+
+	if _, err := os.Stat(cachePath); errors.Is(err, fs.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(cachePath), 0755); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "failed to create cache dir")
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		if err := h.storage.DownloadFile(ctx, fmt.Sprintf("results/%s/screenshot.png", id), cachePath); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "failed to download screenshot")
+			http.NotFound(w, r)
+			return
+		}
+	}
+
+	file, err := os.Open(cachePath)
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "failed to get screenshot")
+		span.SetStatus(codes.Error, "failed to open cached screenshot")
 		http.NotFound(w, r)
 		return
 	}
-	defer closeQuietly(stream)
+	defer closeQuietly(file)
+
+	stat, err := file.Stat()
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to stat cached screenshot")
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Cache-Control", "public, max-age=604800")
 	w.Header().Set("Content-Type", "image/png")
-	if etag != nil {
-		w.Header().Set("ETag", *etag)
-	}
-	if lastModified != nil {
-		w.Header().Set("Last-Modified", lastModified.UTC().Format(http.TimeFormat))
-	}
+	w.Header().Set("Last-Modified", stat.ModTime().UTC().Format(http.TimeFormat))
 
-	if _, err := io.Copy(w, stream); err != nil {
+	if _, err := io.Copy(w, file); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "failed to stream screenshot")
 	}
