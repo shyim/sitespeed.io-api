@@ -11,6 +11,7 @@ import (
 	"github.com/shyim/sitespeed-api/internal/cleanup"
 	"github.com/shyim/sitespeed-api/internal/docker"
 	"github.com/shyim/sitespeed-api/internal/handler"
+	"github.com/shyim/sitespeed-api/internal/middleware"
 	"github.com/shyim/sitespeed-api/internal/observability"
 	"github.com/shyim/sitespeed-api/internal/runner"
 	"github.com/shyim/sitespeed-api/internal/storage"
@@ -65,6 +66,7 @@ func main() {
 	mux.HandleFunc("GET /screenshot/{id}", h.HandleGetScreenshot)
 
 	finalHandler := h.AuthMiddleware(mux)
+	finalHandler = middleware.CompressMiddleware(finalHandler)
 	finalHandler = recoverMiddleware(finalHandler)
 	finalHandler = loggingMiddleware(finalHandler)
 	finalHandler = otelhttp.NewHandler(finalHandler, "http.server",
