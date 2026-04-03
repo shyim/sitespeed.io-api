@@ -154,7 +154,7 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
-			Containers: []corev1.Container{
+			InitContainers: []corev1.Container{
 				{
 					Name:  "sitespeed",
 					Image: r.image,
@@ -174,6 +174,24 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 							Name:      "dshm",
 							MountPath: "/dev/shm",
 						},
+						{
+							Name:      "results",
+							MountPath: containerOutputDir,
+						},
+					},
+				},
+			},
+			Containers: []corev1.Container{
+				{
+					Name:    "results",
+					Image:   "busybox:1.37",
+					Command: []string{"sh", "-c", "sleep infinity"},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "results",
+							MountPath: containerOutputDir,
+							ReadOnly:  true,
+						},
 					},
 				},
 			},
@@ -185,6 +203,12 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 							Medium:    corev1.StorageMediumMemory,
 							SizeLimit: resource.NewQuantity(2*1024*1024*1024, resource.BinarySI),
 						},
+					},
+				},
+				{
+					Name: "results",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 			},
@@ -218,20 +242,12 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 	timeoutCtx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	phase, err := r.waitForPodCompletion(timeoutCtx, podName, createdPod.ResourceVersion)
-	if err != nil {
+	if err := r.waitForInitContainer(timeoutCtx, podName, createdPod.ResourceVersion); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "error waiting for pod")
 		logs := r.getPodLogs(ctx, podName)
 		deletePod()
 		return "", fmt.Errorf("error waiting for pod: %w\nLogs: %s", err, logs)
-	}
-
-	if phase != corev1.PodSucceeded {
-		span.SetStatus(codes.Error, "sitespeed pod failed")
-		logs := r.getPodLogs(ctx, podName)
-		deletePod()
-		return "", fmt.Errorf("sitespeed pod failed (phase: %s): %s", phase, logs)
 	}
 
 	// Copy results from pod
@@ -246,7 +262,7 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 		return "", fmt.Errorf("failed to create result dir: %w", err)
 	}
 
-	if err := r.copyFromPod(ctx, podName, "sitespeed", containerOutputDir, localResultDir); err != nil {
+	if err := r.copyFromPod(ctx, podName, "results", containerOutputDir, localResultDir); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "failed to copy pod results")
 		deletePod()
@@ -257,15 +273,17 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 	return localResultDir, nil
 }
 
-func (r *Runner) waitForPodCompletion(ctx context.Context, podName, resourceVersion string) (corev1.PodPhase, error) {
+func (r *Runner) waitForInitContainer(ctx context.Context, podName, resourceVersion string) error {
 	watcher, err := r.clientset.CoreV1().Pods(r.namespace).Watch(ctx, metav1.ListOptions{
 		FieldSelector:   fmt.Sprintf("metadata.name=%s", podName),
 		ResourceVersion: resourceVersion,
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to watch pod: %w", err)
+		return fmt.Errorf("failed to watch pod: %w", err)
 	}
 	defer watcher.Stop()
+
+	initDone := false
 
 	for event := range watcher.ResultChan() {
 		switch event.Type {
@@ -274,18 +292,43 @@ func (r *Runner) waitForPodCompletion(ctx context.Context, podName, resourceVers
 			if !ok {
 				continue
 			}
-			switch pod.Status.Phase {
-			case corev1.PodSucceeded, corev1.PodFailed:
-				return pod.Status.Phase, nil
+
+			// Check if the init container (sitespeed) has finished
+			if !initDone {
+				for _, cs := range pod.Status.InitContainerStatuses {
+					if cs.Name != "sitespeed" {
+						continue
+					}
+					if cs.State.Terminated != nil {
+						if cs.State.Terminated.ExitCode != 0 {
+							return fmt.Errorf("sitespeed init container failed with exit code %d", cs.State.Terminated.ExitCode)
+						}
+						initDone = true
+					}
+				}
+			}
+
+			// Wait for the results sidecar container to be running
+			if initDone {
+				for _, cs := range pod.Status.ContainerStatuses {
+					if cs.Name == "results" && cs.Ready {
+						return nil
+					}
+				}
+			}
+
+			// Also handle pod-level failures
+			if pod.Status.Phase == corev1.PodFailed {
+				return fmt.Errorf("pod failed")
 			}
 		case watch.Deleted:
-			return "", fmt.Errorf("pod was deleted unexpectedly")
+			return fmt.Errorf("pod was deleted unexpectedly")
 		case watch.Error:
-			return "", fmt.Errorf("watch error: %v", event.Object)
+			return fmt.Errorf("watch error: %v", event.Object)
 		}
 	}
 
-	return "", fmt.Errorf("watch channel closed (likely timeout)")
+	return fmt.Errorf("watch channel closed (likely timeout)")
 }
 
 func (r *Runner) copyFromPod(ctx context.Context, podName, containerName, srcPath, destDir string) error {
@@ -378,6 +421,7 @@ func (r *Runner) getPodLogs(ctx context.Context, podName string) string {
 
 	tailLines := int64(50)
 	req := r.clientset.CoreV1().Pods(r.namespace).GetLogs(podName, &corev1.PodLogOptions{
+		Container: "sitespeed",
 		TailLines: &tailLines,
 	})
 
