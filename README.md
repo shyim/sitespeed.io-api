@@ -70,6 +70,7 @@ Response:
 | `OTEL_SERVICE_NAME` | OpenTelemetry service name | `sitespeed-api` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint used for traces | _(none, disabled)_ |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Trace-specific OTLP endpoint override | _(none, disabled)_ |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Headers for OTLP exporter (e.g. `key=value,key2=value2`) | _(none)_ |
 
 When one of the OTLP endpoint variables is configured, incoming HTTP requests are traced and log lines emitted inside traced request flows include `trace_id` and `span_id` for correlation.
 
@@ -80,7 +81,7 @@ When one of the OTLP endpoint variables is configured, incoming HTTP requests ar
 | `RUNNER_TYPE` | `kubernetes` or `docker` | `docker` |
 | `SITESPEED_IMAGE` | sitespeed.io container image | `sitespeedio/sitespeed.io:latest` |
 | `RESULT_BASE_DIR` | Local directory for results | `/tmp/sitespeed-results` |
-| `DOCKER_TIMEOUT` | Analysis timeout | `300s` |
+| `ANALYSIS_TIMEOUT` | Analysis timeout (also accepts deprecated `DOCKER_TIMEOUT`) | `300s` |
 | `MAX_CONCURRENT_ANALYSES` | Max parallel analyses | `5` |
 
 ### Kubernetes-specific

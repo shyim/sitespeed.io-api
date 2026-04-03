@@ -79,7 +79,7 @@ func NewRunner() (*Runner, error) {
 	baseDir := cmp.Or(os.Getenv("RESULT_BASE_DIR"), "/tmp/sitespeed-results")
 
 	timeout := 300 * time.Second
-	if v := os.Getenv("DOCKER_TIMEOUT"); v != "" {
+	if v := cmp.Or(os.Getenv("ANALYSIS_TIMEOUT"), os.Getenv("DOCKER_TIMEOUT")); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			timeout = d
 		}

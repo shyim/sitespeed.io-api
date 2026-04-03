@@ -10,7 +10,7 @@ services:
       - S3_BUCKET_NAME=sitespeed-results
       - SITESPEED_IMAGE=sitespeedio/sitespeed.io:latest
       - DOCKER_NETWORK=sitespeed-io-api_default
-      - DOCKER_TIMEOUT=300s
+      - ANALYSIS_TIMEOUT=300s
       - MAX_CONCURRENT_ANALYSES=5
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
