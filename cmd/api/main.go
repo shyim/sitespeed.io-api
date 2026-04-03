@@ -68,6 +68,9 @@ func main() {
 	finalHandler = recoverMiddleware(finalHandler)
 	finalHandler = loggingMiddleware(finalHandler)
 	finalHandler = otelhttp.NewHandler(finalHandler, "http.server",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/healthz"
+		}),
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 			pattern := r.Pattern
 			if pattern == "" {
