@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -19,7 +20,17 @@ import (
 const serviceName = "sitespeed-api"
 
 func Setup(ctx context.Context) (func(context.Context) error, error) {
-	slog.SetDefault(slog.New(newTraceHandler(slog.NewTextHandler(os.Stderr, nil))))
+	handler := newTraceHandler(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		ReplaceAttr: replaceDatadogAttr,
+	}))
+	logger := slog.New(handler).With("service", configuredServiceName())
+	if env := os.Getenv("DD_ENV"); env != "" {
+		logger = logger.With("env", env)
+	}
+	if version := os.Getenv("DD_VERSION"); version != "" {
+		logger = logger.With("version", version)
+	}
+	slog.SetDefault(logger)
 
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
@@ -32,7 +43,7 @@ func Setup(ctx context.Context) (func(context.Context) error, error) {
 		resource.WithProcess(),
 		resource.WithHost(),
 		resource.WithAttributes(
-			semconv.ServiceName(cmp.Or(os.Getenv("OTEL_SERVICE_NAME"), serviceName)),
+			semconv.ServiceName(configuredServiceName()),
 		),
 	)
 	if err != nil {
@@ -54,7 +65,7 @@ func Setup(ctx context.Context) (func(context.Context) error, error) {
 	)
 	otel.SetTracerProvider(provider)
 
-	slog.Info("OpenTelemetry tracing enabled", "service", cmp.Or(os.Getenv("OTEL_SERVICE_NAME"), serviceName))
+	slog.Info("OpenTelemetry tracing enabled")
 
 	return provider.Shutdown, nil
 }
@@ -110,4 +121,39 @@ func tracingConfigured() bool {
 	}
 
 	return false
+}
+
+func configuredServiceName() string {
+	return cmp.Or(os.Getenv("OTEL_SERVICE_NAME"), serviceName)
+}
+
+func replaceDatadogAttr(_ []string, attr slog.Attr) slog.Attr {
+	switch attr.Key {
+	case slog.TimeKey:
+		attr.Key = "timestamp"
+	case slog.LevelKey:
+		attr.Key = "status"
+		attr.Value = slog.StringValue(datadogStatus(attr.Value))
+	case slog.MessageKey:
+		attr.Key = "message"
+	}
+
+	return attr
+}
+
+func datadogStatus(value slog.Value) string {
+	if level, ok := value.Any().(slog.Level); ok {
+		switch {
+		case level <= slog.LevelDebug:
+			return "debug"
+		case level < slog.LevelWarn:
+			return "info"
+		case level < slog.LevelError:
+			return "warn"
+		default:
+			return "error"
+		}
+	}
+
+	return strings.ToLower(value.String())
 }

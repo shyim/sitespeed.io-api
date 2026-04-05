@@ -122,7 +122,12 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		recorder := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		slog.InfoContext(r.Context(), "Request started", "method", r.Method, "path", r.URL.Path)
 		next.ServeHTTP(recorder, r)
-		slog.InfoContext(r.Context(), "Request completed", "method", r.Method, "path", r.URL.Path, "status", recorder.statusCode, "duration", time.Since(start))
+		slog.InfoContext(r.Context(), "Request completed",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"http_status_code", recorder.statusCode,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 	})
 }
 

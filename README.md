@@ -11,6 +11,7 @@ A Go REST API that wraps [sitespeed.io](https://www.sitespeed.io/) to run web pe
 - Screenshot capture
 - Automatic cleanup of stale containers/pods and result files
 - Optional bearer token authentication
+- JSON structured logging for Datadog-friendly log ingestion
 - Optional OpenTelemetry tracing with trace-aware request logging
 
 ## API Endpoints
@@ -72,7 +73,7 @@ Response:
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Trace-specific OTLP endpoint override | _(none, disabled)_ |
 | `OTEL_EXPORTER_OTLP_HEADERS` | Headers for OTLP exporter (e.g. `key=value,key2=value2`) | _(none)_ |
 
-When one of the OTLP endpoint variables is configured, incoming HTTP requests are traced and log lines emitted inside traced request flows include `trace_id` and `span_id` for correlation.
+Logs are emitted as JSON to `stderr` with Datadog-friendly top-level fields such as `timestamp`, `status`, `message`, and `service`. When one of the OTLP endpoint variables is configured, incoming HTTP requests are traced and log lines emitted inside traced request flows also include `trace_id` and `span_id` for correlation.
 
 ### Runner
 
