@@ -13,11 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 	"github.com/shyim/sitespeed-api/internal/models"
 	"github.com/shyim/sitespeed-api/internal/observability"
 	"go.opentelemetry.io/otel/attribute"
@@ -50,7 +48,7 @@ func NewRunner() (*Runner, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := cli.Ping(ctx); err != nil {
+	if _, err := cli.Ping(ctx, client.PingOptions{}); err != nil {
 		return nil, fmt.Errorf("failed to ping docker daemon: %w", err)
 	}
 
@@ -94,13 +92,12 @@ func (r *Runner) EnsureImage(ctx context.Context) error {
 	}
 
 	observability.Printf(ctx, "Pulling image %s", r.image)
-	reader, err := r.client.ImagePull(ctx, r.image, image.PullOptions{})
+	pullResp, err := r.client.ImagePull(ctx, r.image, client.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to pull image %s: %w", r.image, err)
 	}
-	defer func() { _ = reader.Close() }()
-	if _, err := io.Copy(io.Discard, reader); err != nil {
-		return fmt.Errorf("failed to read image pull response: %w", err)
+	if err := pullResp.Wait(ctx); err != nil {
+		return fmt.Errorf("failed to pull image %s: %w", r.image, err)
 	}
 	observability.Printf(ctx, "Image %s pulled", r.image)
 	return nil
@@ -165,7 +162,12 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 
 	containerName := fmt.Sprintf("sitespeed-%s", id)
 
-	resp, err := r.client.ContainerCreate(ctx, containerCfg, hostCfg, networkCfg, nil, containerName)
+	resp, err := r.client.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config:           containerCfg,
+		HostConfig:       hostCfg,
+		NetworkingConfig: networkCfg,
+		Name:             containerName,
+	})
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "failed to create container")
@@ -177,12 +179,12 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 	removeContainer := func() {
 		removeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		if err := r.client.ContainerRemove(removeCtx, containerID, container.RemoveOptions{Force: true}); err != nil {
+		if _, err := r.client.ContainerRemove(removeCtx, containerID, client.ContainerRemoveOptions{Force: true}); err != nil {
 			observability.Errorf(ctx, "Failed to remove container %s: %v", containerID, err)
 		}
 	}
 
-	if err := r.client.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+	if _, err := r.client.ContainerStart(ctx, containerID, client.ContainerStartOptions{}); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "failed to start container")
 		removeContainer()
@@ -192,21 +194,21 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 	timeoutCtx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	waitCh, errCh := r.client.ContainerWait(timeoutCtx, containerID, container.WaitConditionNotRunning)
+	waitResult := r.client.ContainerWait(timeoutCtx, containerID, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
 	select {
-	case result := <-waitCh:
+	case result := <-waitResult.Result:
 		if result.StatusCode != 0 {
 			span.SetStatus(codes.Error, "sitespeed container failed")
 			logs := r.getContainerLogs(ctx, containerID)
 			removeContainer()
 			return "", fmt.Errorf("sitespeed container exited with code %d: %s", result.StatusCode, logs)
 		}
-	case err := <-errCh:
+	case err := <-waitResult.Error:
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "error waiting for container")
 		stopCtx, stopCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer stopCancel()
-		if err := r.client.ContainerStop(stopCtx, containerID, container.StopOptions{}); err != nil {
+		if _, err := r.client.ContainerStop(stopCtx, containerID, client.ContainerStopOptions{}); err != nil {
 			observability.Errorf(ctx, "Failed to stop container %s: %v", containerID, err)
 		}
 		removeContainer()
@@ -240,13 +242,13 @@ func (r *Runner) copyFromContainer(ctx context.Context, containerID, srcPath, de
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 	defer cancel()
 
-	reader, _, err := r.client.CopyFromContainer(ctx, containerID, srcPath)
+	copyResult, err := r.client.CopyFromContainer(ctx, containerID, client.CopyFromContainerOptions{SourcePath: srcPath})
 	if err != nil {
 		return fmt.Errorf("CopyFromContainer failed: %w", err)
 	}
-	defer func() { _ = reader.Close() }()
+	defer func() { _ = copyResult.Content.Close() }()
 
-	tr := tar.NewReader(reader)
+	tr := tar.NewReader(copyResult.Content)
 	for {
 		header, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -311,7 +313,7 @@ func (r *Runner) getContainerLogs(ctx context.Context, containerID string) strin
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 
-	reader, err := r.client.ContainerLogs(ctx, containerID, container.LogsOptions{
+	logsResult, err := r.client.ContainerLogs(ctx, containerID, client.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Tail:       "50",
@@ -319,9 +321,9 @@ func (r *Runner) getContainerLogs(ctx context.Context, containerID string) strin
 	if err != nil {
 		return fmt.Sprintf("(failed to get logs: %v)", err)
 	}
-	defer func() { _ = reader.Close() }()
+	defer func() { _ = logsResult.Close() }()
 
-	out, err := io.ReadAll(reader)
+	out, err := io.ReadAll(logsResult)
 	if err != nil {
 		return fmt.Sprintf("(failed to read logs: %v)", err)
 	}
@@ -329,10 +331,9 @@ func (r *Runner) getContainerLogs(ctx context.Context, containerID string) strin
 }
 
 func (r *Runner) CleanupOrphaned(ctx context.Context) error {
-	f := filters.NewArgs()
-	f.Add("label", labelApp+"=true")
+	f := make(client.Filters).Add("label", labelApp+"=true")
 
-	containers, err := r.client.ContainerList(ctx, container.ListOptions{
+	listResult, err := r.client.ContainerList(ctx, client.ContainerListOptions{
 		All:     true,
 		Filters: f,
 	})
@@ -341,14 +342,14 @@ func (r *Runner) CleanupOrphaned(ctx context.Context) error {
 	}
 
 	threshold := time.Now().Add(-2 * r.timeout)
-	for _, c := range containers {
+	for _, c := range listResult.Items {
 		created := time.Unix(c.Created, 0)
 		if created.Before(threshold) {
 			observability.Printf(ctx, "Cleaning up orphaned container %s (created %s)", c.ID[:12], created.Format(time.RFC3339))
-			if err := r.client.ContainerStop(ctx, c.ID, container.StopOptions{}); err != nil {
+			if _, err := r.client.ContainerStop(ctx, c.ID, client.ContainerStopOptions{}); err != nil {
 				observability.Errorf(ctx, "Failed to stop orphaned container %s: %v", c.ID[:12], err)
 			}
-			if err := r.client.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
+			if _, err := r.client.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true}); err != nil {
 				observability.Errorf(ctx, "Failed to remove orphaned container %s: %v", c.ID[:12], err)
 			}
 		}
