@@ -36,8 +36,8 @@ func TestTraceHandlerAddsTraceContext(t *testing.T) {
 
 	assert.Equal(t, "hello world", record["message"])
 	assert.Equal(t, "info", record["status"])
-	assert.Equal(t, spanCtx.TraceID().String(), record["trace_id"])
-	assert.Equal(t, spanCtx.SpanID().String(), record["span_id"])
+	assert.Equal(t, spanCtx.TraceID().String(), record["dd.trace_id"])
+	assert.Equal(t, spanCtx.SpanID().String(), record["dd.span_id"])
 	assert.Contains(t, record, "timestamp")
 }
 
@@ -56,8 +56,8 @@ func TestTraceHandlerWithoutTrace(t *testing.T) {
 
 	assert.Equal(t, "no trace", record["message"])
 	assert.Equal(t, "info", record["status"])
-	assert.NotContains(t, record, "trace_id")
-	assert.NotContains(t, record, "span_id")
+	assert.NotContains(t, record, "dd.trace_id")
+	assert.NotContains(t, record, "dd.span_id")
 }
 
 func TestDatadogStatus(t *testing.T) {

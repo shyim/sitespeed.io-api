@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/shyim/sitespeed-api/internal/cleanup"
@@ -126,10 +127,18 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		recorder := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(recorder, r)
 		slog.InfoContext(r.Context(), "Request completed",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"http_status_code", recorder.statusCode,
-			"duration_ms", time.Since(start).Milliseconds(),
+			slog.Group("http",
+				slog.String("method", r.Method),
+				slog.String("url", r.URL.Path),
+				slog.Int("status_code", recorder.statusCode),
+				slog.String("useragent", r.UserAgent()),
+			),
+			slog.Group("network",
+				slog.Group("client",
+					slog.String("ip", clientIP(r)),
+				),
+			),
+			"duration", time.Since(start).Nanoseconds(),
 		)
 	})
 }
@@ -159,4 +168,18 @@ type statusRecorder struct {
 func (r *statusRecorder) WriteHeader(statusCode int) {
 	r.statusCode = statusCode
 	r.ResponseWriter.WriteHeader(statusCode)
+}
+
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// First entry is the original client IP
+		if i := strings.Index(xff, ","); i > 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return xff
+	}
+	if xri := r.Header.Get("X-Real-Ip"); xri != "" {
+		return xri
+	}
+	return r.RemoteAddr
 }

@@ -23,7 +23,11 @@ func Setup(ctx context.Context) (func(context.Context) error, error) {
 	handler := newTraceHandler(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		ReplaceAttr: replaceDatadogAttr,
 	}))
-	logger := slog.New(handler).With("service", configuredServiceName())
+	logger := slog.New(handler).With(
+		"service", configuredServiceName(),
+		"source", configuredServiceName(),
+		"logger.name", configuredServiceName(),
+	)
 	if env := os.Getenv("DD_ENV"); env != "" {
 		logger = logger.With("env", env)
 	}
@@ -95,8 +99,8 @@ func (h *traceHandler) Handle(ctx context.Context, r slog.Record) error {
 	spanCtx := trace.SpanContextFromContext(ctx)
 	if spanCtx.IsValid() {
 		r.AddAttrs(
-			slog.String("trace_id", spanCtx.TraceID().String()),
-			slog.String("span_id", spanCtx.SpanID().String()),
+			slog.String("dd.trace_id", spanCtx.TraceID().String()),
+			slog.String("dd.span_id", spanCtx.SpanID().String()),
 		)
 	}
 	return h.Handler.Handle(ctx, r)
