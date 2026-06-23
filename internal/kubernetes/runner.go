@@ -270,7 +270,7 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 	timeoutCtx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	if err := r.waitForInitContainer(timeoutCtx, podName, createdPod.ResourceVersion); err != nil {
+	if err := r.waitForInitContainer(timeoutCtx, podName); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "error waiting for pod")
 		logs := r.getPodLogs(ctx, podName)
@@ -301,62 +301,109 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 	return localResultDir, nil
 }
 
-func (r *Runner) waitForInitContainer(ctx context.Context, podName, resourceVersion string) error {
-	watcher, err := r.clientset.CoreV1().Pods(r.namespace).Watch(ctx, metav1.ListOptions{
-		FieldSelector:   fmt.Sprintf("metadata.name=%s", podName),
-		ResourceVersion: resourceVersion,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to watch pod: %w", err)
-	}
-	defer watcher.Stop()
-
-	initDone := false
-
-	for event := range watcher.ResultChan() {
-		switch event.Type {
-		case watch.Modified:
-			pod, ok := event.Object.(*corev1.Pod)
-			if !ok {
-				continue
-			}
-
-			// Check if the init container (sitespeed) has finished
-			if !initDone {
-				for _, cs := range pod.Status.InitContainerStatuses {
-					if cs.Name != "sitespeed" {
-						continue
-					}
-					if cs.State.Terminated != nil {
-						if cs.State.Terminated.ExitCode != 0 {
-							return fmt.Errorf("sitespeed init container failed with exit code %d", cs.State.Terminated.ExitCode)
-						}
-						initDone = true
-					}
-				}
-			}
-
-			// Wait for the results sidecar container to be running
-			if initDone {
-				for _, cs := range pod.Status.ContainerStatuses {
-					if cs.Name == "results" && cs.Ready {
-						return nil
-					}
-				}
-			}
-
-			// Also handle pod-level failures
-			if pod.Status.Phase == corev1.PodFailed {
-				return fmt.Errorf("pod failed")
-			}
-		case watch.Deleted:
-			return fmt.Errorf("pod was deleted unexpectedly")
-		case watch.Error:
-			return fmt.Errorf("watch error: %v", event.Object)
+// podReady reports whether the analysis has reached the point where results can
+// be copied: the sitespeed init container has finished successfully and the
+// results sidecar is ready. It returns an error for terminal failure states.
+func podReady(pod *corev1.Pod) (bool, error) {
+	for _, cs := range pod.Status.InitContainerStatuses {
+		if cs.Name != "sitespeed" {
+			continue
+		}
+		if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
+			return false, fmt.Errorf("sitespeed init container failed with exit code %d", cs.State.Terminated.ExitCode)
 		}
 	}
 
-	return fmt.Errorf("watch channel closed (likely timeout)")
+	if pod.Status.Phase == corev1.PodFailed {
+		return false, fmt.Errorf("pod failed")
+	}
+
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name == "results" && cs.Ready {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// waitForInitContainer blocks until the analysis pod is ready to copy results
+// from, or the context expires. It re-establishes the watch on transient
+// errors (e.g. the apiserver expiring the resource version) instead of failing
+// the analysis, and primes itself with an initial Get so an already-ready pod
+// is never missed.
+func (r *Runner) waitForInitContainer(ctx context.Context, podName string) error {
+	pods := r.clientset.CoreV1().Pods(r.namespace)
+
+	for {
+		// Snapshot current state. This both catches a pod that became ready
+		// before the watch is established and gives us a fresh resource
+		// version to watch from, avoiding "too old resource version" errors.
+		pod, err := pods.Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return fmt.Errorf("pod was deleted unexpectedly")
+			}
+			return fmt.Errorf("failed to get pod: %w", err)
+		}
+		if ready, err := podReady(pod); err != nil || ready {
+			return err
+		}
+
+		watcher, err := pods.Watch(ctx, metav1.ListOptions{
+			FieldSelector:   fmt.Sprintf("metadata.name=%s", podName),
+			ResourceVersion: pod.ResourceVersion,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to watch pod: %w", err)
+		}
+
+		restart, err := r.watchUntilReady(ctx, watcher)
+		watcher.Stop()
+		if err != nil {
+			return err
+		}
+		if !restart {
+			return nil
+		}
+		// Transient watch error or closed channel: loop to re-Get and re-watch.
+	}
+}
+
+// watchUntilReady consumes a single watch until the pod is ready (restart=false,
+// err=nil), hits a terminal failure (err set), or the watch should be
+// re-established (restart=true). The caller is responsible for stopping the
+// watcher.
+func (r *Runner) watchUntilReady(ctx context.Context, watcher watch.Interface) (restart bool, err error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return false, fmt.Errorf("timed out waiting for pod: %w", ctx.Err())
+		case event, ok := <-watcher.ResultChan():
+			if !ok {
+				// Channel closed (server-side timeout or dropped connection):
+				// re-establish rather than treating it as a failure.
+				return true, nil
+			}
+
+			switch event.Type {
+			case watch.Modified, watch.Added:
+				pod, ok := event.Object.(*corev1.Pod)
+				if !ok {
+					continue
+				}
+				if ready, err := podReady(pod); err != nil || ready {
+					return false, err
+				}
+			case watch.Deleted:
+				return false, fmt.Errorf("pod was deleted unexpectedly")
+			case watch.Error:
+				// The apiserver sent an error (commonly "too old resource
+				// version", code 410). This is recoverable: re-list and re-watch.
+				observability.Errorf(ctx, "watch error, re-establishing watch: %v", event.Object)
+				return true, nil
+			}
+		}
+	}
 }
 
 func (r *Runner) copyFromPod(ctx context.Context, podName, containerName, srcPath, destDir string) error {
