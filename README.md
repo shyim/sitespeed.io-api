@@ -91,6 +91,7 @@ Logs are emitted as JSON to `stderr` with Datadog-friendly top-level fields such
 |----------|-------------|---------|
 | `KUBECONFIG` | Path to kubeconfig | `~/.kube/config` |
 | `K8S_NAMESPACE` | Namespace for pods | `default` |
+| `K8S_NODE_SELECTOR` | Node selector for analysis pods, as comma-separated `key=value` pairs (e.g. `disktype=ssd,pool=ci`) | _(none)_ |
 
 ### S3 Storage
 

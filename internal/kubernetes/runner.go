@@ -43,6 +43,7 @@ type Runner struct {
 	resultBaseDir string
 	timeout       time.Duration
 	maxConcurrent chan struct{}
+	nodeSelector  map[string]string
 }
 
 func NewRunner() (*Runner, error) {
@@ -100,6 +101,7 @@ func NewRunner() (*Runner, error) {
 		resultBaseDir: baseDir,
 		timeout:       timeout,
 		maxConcurrent: make(chan struct{}, maxConcurrent),
+		nodeSelector:  parseNodeSelector(os.Getenv("K8S_NODE_SELECTOR")),
 	}
 
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
@@ -107,6 +109,31 @@ func NewRunner() (*Runner, error) {
 	}
 
 	return r, nil
+}
+
+// parseNodeSelector parses a comma-separated list of key=value pairs into a
+// node selector map. Returns nil if the input is empty or contains no valid pairs.
+func parseNodeSelector(raw string) map[string]string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	selector := make(map[string]string)
+	for _, pair := range strings.Split(raw, ",") {
+		key, value, ok := strings.Cut(pair, "=")
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if !ok || key == "" {
+			continue
+		}
+		selector[key] = value
+	}
+
+	if len(selector) == 0 {
+		return nil
+	}
+	return selector
 }
 
 func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnalyzeRequest) (string, error) {
@@ -154,6 +181,7 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
+			NodeSelector:  r.nodeSelector,
 			InitContainers: []corev1.Container{
 				{
 					Name:  "sitespeed",
