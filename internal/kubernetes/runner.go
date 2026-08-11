@@ -35,6 +35,22 @@ const labelApp = "sitespeed-api"
 const labelID = "sitespeed-api-id"
 const containerOutputDir = "/sitespeed.io"
 
+// Timing for the delete-then-create race: Kubernetes keeps a terminating pod's
+// name reserved until deletion finishes, so Create can fail with AlreadyExists
+// ("object is being deleted") if we do not wait. Overridable in tests.
+var (
+	podDeletionTimeout      = 60 * time.Second
+	podDeletionPollInterval = 200 * time.Millisecond
+	podCreateMaxAttempts    = 5
+)
+
+// podAPI is the subset of the Pods client used around create/delete.
+type podAPI interface {
+	Get(ctx context.Context, name string, opts metav1.GetOptions) (*corev1.Pod, error)
+	Create(ctx context.Context, pod *corev1.Pod, opts metav1.CreateOptions) (*corev1.Pod, error)
+	Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error
+}
+
 type Runner struct {
 	clientset     *kubernetes.Clientset
 	restConfig    *rest.Config
@@ -245,12 +261,10 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 
 	podsClient := r.clientset.CoreV1().Pods(r.namespace)
 
-	// Clean up any existing pod with same name
-	if err := podsClient.Delete(ctx, podName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		observability.Errorf(ctx, "Failed to delete existing pod %s: %v", podName, err)
-	}
-
-	createdPod, err := podsClient.Create(ctx, pod, metav1.CreateOptions{})
+	// Clean up any existing pod with the same name, then wait until it is fully
+	// gone before Create. A terminating pod still occupies the name, which
+	// otherwise yields AlreadyExists / "object is being deleted".
+	createdPod, err := ensurePodRecreated(ctx, podsClient, pod)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "failed to create pod")
@@ -299,6 +313,74 @@ func (r *Runner) RunAnalysis(ctx context.Context, id string, req models.ApiAnaly
 
 	deletePod()
 	return localResultDir, nil
+}
+
+// ensurePodRecreated deletes any existing pod with the same name, waits until
+// it is fully removed, then creates the new pod. Create is retried on
+// AlreadyExists/Conflict in case the name is still reserved while terminating.
+func ensurePodRecreated(ctx context.Context, pods podAPI, pod *corev1.Pod) (*corev1.Pod, error) {
+	if err := pods.Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		observability.Errorf(ctx, "Failed to delete existing pod %s: %v", pod.Name, err)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, podDeletionTimeout)
+	defer cancel()
+	if err := waitUntilPodDeleted(waitCtx, pods, pod.Name); err != nil {
+		return nil, err
+	}
+
+	return createPodWithRetry(ctx, pods, pod)
+}
+
+// waitUntilPodDeleted polls until Get returns NotFound for podName, or ctx ends.
+func waitUntilPodDeleted(ctx context.Context, pods podAPI, podName string) error {
+	ticker := time.NewTicker(podDeletionPollInterval)
+	defer ticker.Stop()
+
+	for {
+		_, err := pods.Get(ctx, podName, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("failed to get pod %s while waiting for deletion: %w", podName, err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for pod %s to be deleted: %w", podName, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// createPodWithRetry creates a pod, retrying when the name is still held by a
+// terminating object (AlreadyExists / Conflict).
+func createPodWithRetry(ctx context.Context, pods podAPI, pod *corev1.Pod) (*corev1.Pod, error) {
+	var lastErr error
+	for attempt := 1; attempt <= podCreateMaxAttempts; attempt++ {
+		created, err := pods.Create(ctx, pod, metav1.CreateOptions{})
+		if err == nil {
+			return created, nil
+		}
+		if !apierrors.IsAlreadyExists(err) && !apierrors.IsConflict(err) {
+			return nil, err
+		}
+		lastErr = err
+		observability.Errorf(ctx, "Create pod %s conflict (attempt %d/%d): %v", pod.Name, attempt, podCreateMaxAttempts, err)
+
+		if delErr := pods.Delete(ctx, pod.Name, metav1.DeleteOptions{}); delErr != nil && !apierrors.IsNotFound(delErr) {
+			observability.Errorf(ctx, "Failed to delete conflicting pod %s: %v", pod.Name, delErr)
+		}
+
+		waitCtx, cancel := context.WithTimeout(ctx, podDeletionTimeout)
+		waitErr := waitUntilPodDeleted(waitCtx, pods, pod.Name)
+		cancel()
+		if waitErr != nil {
+			return nil, fmt.Errorf("%w (after create conflict: %v)", waitErr, lastErr)
+		}
+	}
+	return nil, fmt.Errorf("failed to create pod after %d attempts: %w", podCreateMaxAttempts, lastErr)
 }
 
 // podReady reports whether the analysis has reached the point where results can
