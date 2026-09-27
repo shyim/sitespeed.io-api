@@ -57,6 +57,11 @@ spec:
                 secretKeyRef:
                   name: sitespeed-api
                   key: auth-token
+            - name: RESULT_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sitespeed-api
+                  key: result-auth-secret
           resources:
             requests:
               memory: 64Mi

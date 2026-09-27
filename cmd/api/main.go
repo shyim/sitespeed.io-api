@@ -62,9 +62,13 @@ func main() {
 	mux.HandleFunc("GET /healthz", h.HandleHealth)
 	mux.HandleFunc("POST /api/result/{id}", h.HandleAnalyze)
 	mux.HandleFunc("DELETE /api/result/{id}", h.HandleDeleteResult)
-	mux.HandleFunc("GET /result/{id}/{path...}", h.HandleGetResult)
-
-	mux.HandleFunc("GET /screenshot/{id}", h.HandleGetScreenshot)
+	// Result access is authorised by signed links, so the auth middleware is
+	// mounted on the routes themselves: it needs the "id" path value that the
+	// router sets while dispatching.
+	mux.Handle("GET /result/{id}/{path...}",
+		h.ResultAuthMiddleware(http.HandlerFunc(h.HandleGetResult)))
+	mux.Handle("GET /screenshot/{id}",
+		h.ResultAuthMiddleware(http.HandlerFunc(h.HandleGetScreenshot)))
 
 	finalHandler := h.AuthMiddleware(mux)
 	finalHandler = middleware.CompressMiddleware(finalHandler)

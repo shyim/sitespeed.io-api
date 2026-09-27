@@ -2,6 +2,7 @@ package handler
 
 import (
 	"archive/zip"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,12 +37,9 @@ func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api") {
 			authToken := os.Getenv("AUTH_TOKEN")
-			if authToken != "" {
-				authHeader := r.Header.Get("Authorization")
-				if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") || authHeader[7:] != authToken {
-					http.Error(w, "Unauthorized", http.StatusUnauthorized)
-					return
-				}
+			if authToken != "" && subtle.ConstantTimeCompare([]byte(bearerToken(r)), []byte(authToken)) != 1 {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
 			}
 		}
 		next.ServeHTTP(w, r)
@@ -417,6 +415,17 @@ func renderError(w http.ResponseWriter, msg string, details *string, status int)
 
 func awsString(v string) *string {
 	return &v
+}
+
+// bearerToken returns the token from an "Authorization: Bearer <token>" header,
+// or an empty string when the header is absent or not a bearer credential.
+func bearerToken(r *http.Request) string {
+	const prefix = "Bearer "
+	header := r.Header.Get("Authorization")
+	if !strings.HasPrefix(header, prefix) {
+		return ""
+	}
+	return strings.TrimPrefix(header, prefix)
 }
 
 func closeQuietly(c io.Closer) {

@@ -7,6 +7,7 @@ A Go REST API that wraps [sitespeed.io](https://www.sitespeed.io/) to run web pe
 - Run sitespeed.io analyses via HTTP API
 - Docker and Kubernetes runner backends
 - S3-compatible result storage (AWS S3, MinIO, etc.)
+- Signed result links: reports stay shareable as plain URLs, protected by a static secret
 - Web Vitals extraction (TTFB, LCP, FCP, CLS, transfer size)
 - Screenshot capture
 - Automatic cleanup of stale containers/pods and result files
@@ -21,8 +22,8 @@ A Go REST API that wraps [sitespeed.io](https://www.sitespeed.io/) to run web pe
 | `GET` | `/healthz` | Basic health check for container/orchestrator probes |
 | `POST` | `/api/result/{id}` | Run a sitespeed.io analysis |
 | `DELETE` | `/api/result/{id}` | Delete stored results |
-| `GET` | `/result/{id}/{path...}` | Browse the full HTML report |
-| `GET` | `/screenshot/{id}` | Get the page screenshot |
+| `GET` | `/result/{id}/{path...}` | Browse the full HTML report (signed link required if `RESULT_AUTH_SECRET` is set) |
+| `GET` | `/screenshot/{id}` | Get the page screenshot (signed link required if `RESULT_AUTH_SECRET` is set) |
 
 ### GET `/healthz`
 
@@ -61,13 +62,79 @@ Response:
 }
 ```
 
+## Signed result links
+
+Without `RESULT_AUTH_SECRET`, `/result/...` and `/screenshot/...` are public to
+anyone who knows the analysis id. Set `RESULT_AUTH_SECRET` and both endpoints
+require a signature, so links can still be shared in Slack, a PR, or a browser
+bookmark while staying unreadable to anyone without the secret.
+
+The scheme is the static-secret flavour of an AWS presigned URL: the signature is
+an HMAC-SHA256 over the analysis id, so it can be computed offline by any holder
+of the secret — this API keeps no state and needs no signing endpoint.
+
+- `sig` — required, `base64url(HMAC-SHA256(secret, "<id>\n<expires>"))`, unpadded
+- `expires` — optional unix timestamp; omit for a link that never expires
+
+```bash
+ID=my-analysis
+SECRET=your-signing-secret
+EXPIRES=$(($(date +%s) + 86400))                       # valid for 24h
+
+SIG=$(printf '%s\n%s' "$ID" "$EXPIRES" \
+  | openssl dgst -sha256 -hmac "$SECRET" -binary \
+  | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+
+echo "https://api.example.com/result/$ID/index.html?sig=$SIG&expires=$EXPIRES"
+```
+
+The signature covers the **analysis id, not the file path**, so a single link
+opens the whole report. The API answers a valid signature with a short-lived
+`HttpOnly` cookie (`sitespeed_result_auth`) scoped to that id, which is what lets
+the report's relative assets — pages, CSS, JS, images — load, since browsers do
+not propagate query parameters to sub-resources. Signing each file path
+individually would return 401 as soon as you clicked a link inside the report.
+
+**The same signature authorises the screenshot.** Because it is keyed on the id
+alone, the value you already computed works on both endpoints:
+
+```bash
+# Report:  https://api.example.com/result/$ID/index.html?sig=$SIG&expires=$EXPIRES
+# Picture: https://api.example.com/screenshot/$ID?sig=$SIG&expires=$EXPIRES
+```
+
+An `<img>` tag in your own UI can therefore point straight at the API:
+
+```html
+<img src="https://api.example.com/screenshot/my-analysis?sig=...&expires=...">
+```
+
+Note that a browser will not attach the query string to a stylesheet or script
+loaded from a different origin, so embed pictures via a signed URL as shown, and
+keep same-origin CSS/JS behind the report page itself.
+
+Consequences worth knowing:
+
+- The grant is bound to one analysis id; a link to one report never unlocks another.
+- Rotating `RESULT_AUTH_SECRET` immediately invalidates all existing links and cookies.
+- Cookies are `SameSite=Lax`, so a report opened in a private window does not
+  share its grant with your normal browser profile.
+- The `Authorization: Bearer <AUTH_TOKEN>` header is also accepted on these
+  endpoints, which keeps scripted/API access working without signing anything.
+- Set `RESULT_AUTH_TTL` to make links and cookies expire automatically; leave it
+  unset and links stay valid indefinitely (cookies still default to 1 hour).
+- This is authentication, not S3 pre-signed URLs: it guards this API, not direct
+  access to the underlying bucket. Keep the bucket private.
+
 ## Configuration
 
 ### General
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `AUTH_TOKEN` | Bearer token for `/api/*` endpoints | _(none, auth disabled)_ |
+| `AUTH_TOKEN` | Bearer token for `/api/*` endpoints, also accepted on result endpoints | _(none, auth disabled)_ |
+| `RESULT_AUTH_SECRET` | Static secret for signing `/result/*` and `/screenshot/*` links | _(none, result auth disabled)_ |
+| `RESULT_AUTH_TTL` | Max lifetime for signed result links and their cookie, e.g. `24h` | _(none, links never expire)_ |
 | `OTEL_SERVICE_NAME` | OpenTelemetry service name | `sitespeed-api` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint used for traces | _(none, disabled)_ |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Trace-specific OTLP endpoint override | _(none, disabled)_ |
