@@ -12,6 +12,9 @@ services:
       - DOCKER_NETWORK=sitespeed-io-api_default
       - ANALYSIS_TIMEOUT=300s
       - MAX_CONCURRENT_ANALYSES=5
+      # Protect /result/* and /screenshot/* with signed links (see README).
+      # - RESULT_AUTH_SECRET=change-me
+      # - RESULT_AUTH_TTL=24h
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
