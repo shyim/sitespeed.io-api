@@ -178,6 +178,18 @@ docker compose up
 
 This starts the API on port 8080 with MinIO as the S3 backend. The Docker socket is mounted so the API can spawn sitespeed.io containers.
 
+## Testing
+
+```bash
+go test ./...                        # unit + handler + storage tests, no Docker needed
+INTEGRATION_DOCKER=1 go test ./...  # additionally runs the real sitespeed.io container test
+```
+
+Storage and handler tests run against an in-process, in-memory S3 server
+([`grafana/s3-mock`](https://github.com/grafana/s3-mock)), so they need no
+container runtime, no image pull and no network. Only the `internal/docker`
+runner test needs a real container.
+
 ## Deployment
 
 ### Docker

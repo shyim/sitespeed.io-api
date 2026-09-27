@@ -78,7 +78,7 @@ func createFakeSitespeedResult(t *testing.T, dir string) {
 func setupTestServer(t *testing.T, runner *mockRunner) (*httptest.Server, *storage.Service) {
 	t.Helper()
 	ctx := context.Background()
-	cfg := testhelper.StartMinio(t, ctx)
+	cfg := testhelper.StartS3Mock(t, ctx)
 	svc, err := storage.NewServiceWithConfig(ctx, cfg)
 	require.NoError(t, err)
 
@@ -87,8 +87,13 @@ func setupTestServer(t *testing.T, runner *mockRunner) (*httptest.Server, *stora
 	mux.HandleFunc("GET /healthz", h.HandleHealth)
 	mux.HandleFunc("POST /api/result/{id}", h.HandleAnalyze)
 	mux.HandleFunc("DELETE /api/result/{id}", h.HandleDeleteResult)
-	mux.HandleFunc("GET /result/{id}/{path...}", h.HandleGetResult)
-	mux.HandleFunc("GET /screenshot/{id}", h.HandleGetScreenshot)
+	// Mirrors the wiring in cmd/api: the result auth middleware has to sit on
+	// the routes themselves because it needs the "id" path value the router
+	// sets during dispatch.
+	mux.Handle("GET /result/{id}/{path...}",
+		h.ResultAuthMiddleware(http.HandlerFunc(h.HandleGetResult)))
+	mux.Handle("GET /screenshot/{id}",
+		h.ResultAuthMiddleware(http.HandlerFunc(h.HandleGetScreenshot)))
 
 	srv := httptest.NewServer(h.AuthMiddleware(mux))
 	t.Cleanup(srv.Close)

@@ -17,7 +17,7 @@ import (
 func setupService(t *testing.T) (*storage.Service, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	cfg := testhelper.StartMinio(t, ctx)
+	cfg := testhelper.StartS3Mock(t, ctx)
 	svc, err := storage.NewServiceWithConfig(ctx, cfg)
 	require.NoError(t, err)
 	return svc, ctx

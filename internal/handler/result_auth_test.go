@@ -1,13 +1,16 @@
 package handler_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/shyim/sitespeed-api/internal/handler"
+	"github.com/shyim/sitespeed-api/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -127,6 +130,55 @@ func TestResultAuthScreenshotIsProtected(t *testing.T) {
 	// Nor may a report link be replayed against a guessed screenshot id.
 	reportSig := handler.SignResult(testSecret, "my-analysis", 0)
 	assert.Equal(t, http.StatusUnauthorized, get(t, srv.URL+"/screenshot/guessed-id?sig="+reportSig, nil).StatusCode)
+}
+
+func TestResultAuthEndToEndThroughProductionWiring(t *testing.T) {
+	// Exercises the full path: run an analysis, let it upload to S3, then read
+	// the report back through the same route wiring cmd/api uses.
+	t.Setenv("RESULT_AUTH_SECRET", testSecret)
+	t.Setenv("AUTH_TOKEN", "")
+
+	mock := &mockRunner{
+		runFunc: func(ctx context.Context, id string, req models.ApiAnalyzeRequest) (string, error) {
+			dir := t.TempDir()
+			createFakeSitespeedResult(t, dir)
+			return dir, nil
+		},
+	}
+	srv, _ := setupTestServer(t, mock)
+
+	body := `{"urls": ["https://example.com"]}`
+	resp, err := http.Post(srv.URL+"/api/result/e2e-test", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// The results exist in storage, but the report is not readable unsigned.
+	assert.Equal(t, http.StatusUnauthorized,
+		get(t, srv.URL+"/result/e2e-test/index.html", nil).StatusCode)
+
+	sig := handler.SignResult(testSecret, "e2e-test", 0)
+	signed := get(t, srv.URL+"/result/e2e-test/index.html?sig="+sig, nil)
+	require.Equal(t, http.StatusOK, signed.StatusCode)
+	assert.Contains(t, signed.Header.Get("Content-Type"), "text/html")
+	cookies := signed.Cookies()
+	require.Len(t, cookies, 1)
+
+	// Assets and the screenshot load with just the cookie the signed request set.
+	asset := get(t, srv.URL+"/result/e2e-test/data/browsertime.summary-total.json", cookies)
+	assert.Equal(t, http.StatusOK, asset.StatusCode)
+	assert.Equal(t, http.StatusOK, get(t, srv.URL+"/screenshot/e2e-test", cookies).StatusCode)
+
+	// Deleting the analysis invalidates access to the report it produced.
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/result/e2e-test", nil)
+	require.NoError(t, err)
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	assert.Equal(t, http.StatusNotFound,
+		get(t, srv.URL+"/result/e2e-test/index.html?sig="+sig, nil).StatusCode)
 }
 
 func TestResultAuthAcceptsValidSignature(t *testing.T) {
